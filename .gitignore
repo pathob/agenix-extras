@@ -1,0 +1,15 @@
+# Nix build outputs
+result
+result-*
+
+# Editor scratch
+.direnv/
+.envrc.local
+*.swp
+*.swo
+
+# OS noise
+.DS_Store
+
+# Claude
+.claude/
