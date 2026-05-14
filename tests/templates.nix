@@ -37,5 +37,15 @@ pkgs.testers.runNixOSTest {
     # Default mode is 0400, owned by root.
     perms = machine.succeed("stat -c '%a %U %G' /run/agenix/rendered/app.toml").strip()
     assert perms == "400 root root", perms
+
+    # Rendered/ parent dir must be traversable by non-root so services running
+    # as a non-root user can open() files inside it (regression: was 0700).
+    dir_perms = machine.succeed("stat -c '%a %U %G' /run/agenix/rendered").strip()
+    assert dir_perms == "751 root root", dir_perms
+
+    # Mode must survive re-activation (install -d is idempotent on mode).
+    machine.succeed("/run/current-system/activate")
+    dir_perms = machine.succeed("stat -c '%a %U %G' /run/agenix/rendered").strip()
+    assert dir_perms == "751 root root", dir_perms
   '';
 }
