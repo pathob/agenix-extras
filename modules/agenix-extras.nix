@@ -284,7 +284,7 @@ in
     system.activationScripts.agenix-extras = lib.mkIf (templates != { }) {
       text = ''
         set -euo pipefail
-        install -d -m 0700 -o root -g root ${lib.escapeShellArg defaultRenderedDir}
+        install -d -m 0751 -o root -g root ${lib.escapeShellArg defaultRenderedDir}
         ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}
       '';
       deps = [ "agenix" ];
