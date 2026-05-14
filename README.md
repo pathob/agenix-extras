@@ -58,6 +58,35 @@ change detection at eval time with no runtime state.
 
 A complete working example lives in [`example/`](./example).
 
+For home-manager as a NixOS submodule:
+
+```nix
+{
+  home-manager.users.alice = { ... }: {
+    imports = [ agenix-extras.homeManagerModules.default ];
+
+    age.identityPaths = [ "/home/alice/.ssh/id_ed25519" ];
+    age.secrets.api-token = {
+      file = ./secrets/api-token.age;
+      restartUnits = [ "mbsync.service" ]; # user units only
+    };
+  };
+}
+```
+
+For standalone home-manager, add the module to your
+`homeManagerConfiguration`:
+
+```nix
+home-manager.lib.homeManagerConfiguration {
+  inherit pkgs;
+  modules = [
+    agenix-extras.homeManagerModules.default
+    ./home.nix
+  ];
+}
+```
+
 ### Templates
 
 ```nix
@@ -142,7 +171,12 @@ files. Never reuse them.
   launchd would mean reshaping `system.activationScripts.agenix-extras` into a
   daemon ordered after `activate-agenix`.
 
-- **No home-manager module.** Only the NixOS module is provided.
+- **home-manager: user units only.** A home-manager module is provided
+  (`homeManagerModules.default`) with the same `age.templates` /
+  `age.secrets.<n>.restartUnits` / `reloadUnits` interface, but `restartUnits`
+  and `reloadUnits` may only name *user* systemd units. The HM module cannot
+  touch system units. Triggers are encoded as `Service.X-Restart-Triggers` on
+  the user unit so home-manager's switch detects them as content changes.
 
 - **Templates cannot supply `hashedPasswordFile`.** Templates render *after*
   the `users` activation snippet (chain: `agenixInstall → users → agenixChown

@@ -12,7 +12,10 @@ pkgs.testers.runNixOSTest {
   nodes.machine = {
     imports = [
       self.nixosModules.default
-      ../example/module.nix
+      (import ../example/module.nix {
+        apiToken = ./secrets/api-token.age;
+        dbPassword = ./secrets/db-password.age;
+      })
       ./install-ssh-host-key.nix
     ];
 

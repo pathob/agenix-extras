@@ -1,24 +1,29 @@
-# Reusable example module: defines two secrets and a template that uses both.
-# This same module is imported by tests/templates.nix so the example is the
-# fixture the test runs against.
+# Reusable example template module. Pass in the two `.age` files; the module
+# declares the secrets and a template that references them.
+#
+# Imported both by the NixOS example (example/configuration.nix) and by the
+# templates VM test (tests/templates.nix). Each consumer separately attaches
+# its own `restartUnits` / `reloadUnits` — the system-vs-user distinction is
+# theirs to make.
+{
+  apiToken,
+  dbPassword,
+}:
+
 {
   config,
   ...
 }:
 
 {
-  age.secrets.api-token.file = ../tests/secrets/api-token.age;
-  age.secrets.db-password.file = ../tests/secrets/db-password.age;
+  age.secrets.api-token.file = apiToken;
+  age.secrets.db-password.file = dbPassword;
 
-  age.templates."app.toml" = {
-    content = ''
-      [api]
-      token = "${config.age.placeholder.api-token}"
+  age.templates."app.toml".content = ''
+    [api]
+    token = "${config.age.placeholder.api-token}"
 
-      [db]
-      password = "${config.age.placeholder.db-password}"
-    '';
-
-    reloadUnits = [ "demo-api.service" ];
-  };
+    [db]
+    password = "${config.age.placeholder.db-password}"
+  '';
 }

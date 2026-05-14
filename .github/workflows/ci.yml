@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test: [templates, restart-on-change]
+        test: [templates, restart-on-change, templates-home]
 
     steps:
       - uses: actions/checkout@v4
