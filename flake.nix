@@ -9,6 +9,11 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    home-manager = {
+      url = "github:nix-community/home-manager/release-25.11";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     systems.url = "github:nix-systems/default";
   };
 
@@ -17,6 +22,7 @@
       self,
       nixpkgs,
       agenix,
+      home-manager,
       systems,
     }:
 
@@ -34,6 +40,15 @@
 
       nixosModules.default = self.nixosModules.agenix-extras;
 
+      homeManagerModules.agenix-extras = {
+        imports = [
+          agenix.homeManagerModules.default
+          ./modules/agenix-extras-home.nix
+        ];
+      };
+
+      homeManagerModules.default = self.homeManagerModules.agenix-extras;
+
       formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-rfc-style);
 
       checks = eachSystem (
@@ -46,6 +61,7 @@
         nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
+          templates-home = import ./tests/templates-home.nix { inherit pkgs self home-manager; };
         }
       );
     };
