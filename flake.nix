@@ -51,6 +51,22 @@
           '';
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+          # Evaluates the example configuration (the README points people at
+          # it) without building the whole system.
+          example =
+            let
+              example = nixpkgs.lib.nixosSystem {
+                modules = [
+                  self.nixosModules.default
+                  ./example/configuration.nix
+                  { nixpkgs.hostPlatform = system; }
+                ];
+              };
+            in
+            pkgs.writeText "agenix-extras-example" (
+              builtins.unsafeDiscardStringContext example.config.system.build.toplevel.drvPath
+            );
+
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
           sysusers = import ./tests/sysusers.nix { inherit pkgs self; };

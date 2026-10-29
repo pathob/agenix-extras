@@ -163,9 +163,15 @@ nix build .#checks.x86_64-linux.restart-on-change
 nix build .#checks.x86_64-linux.sysusers
 ```
 
+Besides the VM tests, `checks` has two cheap ones: `formatting` (`nixfmt
+--check` over the tree) and `example`, which evaluates
+[`example/configuration.nix`](./example/configuration.nix).
+
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
-two jobs: an eval-only `nix flake check --no-build`, and a matrix job that
-builds each VM test on `ubuntu-latest` (which has nested KVM).
+an eval-only `nix flake check --no-build`, builds the cheap checks, and then
+runs each VM test as its own job on `ubuntu-latest` (which has nested KVM).
+The list of VM tests comes from the flake, so a new test only needs adding
+to `checks`. A weekly workflow opens a PR that updates `flake.lock`.
 
 The fixtures under `tests/keys/` and `tests/secrets/` are **test-only**: the
 private SSH key is checked in so the test can decrypt the pre-encrypted `.age`
