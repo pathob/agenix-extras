@@ -73,8 +73,11 @@
           example =
             let
               example = nixpkgs.lib.nixosSystem {
+                # As in example/flake.nix.
                 modules = [
                   self.nixosModules.default
+                  home-manager.nixosModules.home-manager
+                  { home-manager.sharedModules = [ self.homeManagerModules.default ]; }
                   ./example/configuration.nix
                   { nixpkgs.hostPlatform = system; }
                 ];

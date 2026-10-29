@@ -62,7 +62,8 @@ your flake has home-manager too, add
 `agenix-extras.inputs.home-manager.follows = "home-manager";` so your lock file
 doesn't carry a second copy.
 
-A complete working example lives in [`example/`](./example).
+A complete working example lives in [`example/`](./example): a NixOS
+configuration, plus a user with the same template through home-manager.
 
 ### Templates
 

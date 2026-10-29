@@ -67,12 +67,14 @@ jobs:
             | xargs nix build --print-build-logs
 
       # The README points people at example/ as a flake, with its `path:..`
-      # input. It has no lock of its own, so pin its nixpkgs to ours.
+      # input. It has no lock of its own, so pin its inputs to ours.
       - name: Evaluate the example flake
         run: |
-          rev=$(jq -r .nodes.nixpkgs.locked.rev flake.lock)
+          nixpkgs=$(jq -r .nodes.nixpkgs.locked.rev flake.lock)
+          home_manager=$(jq -r '.nodes["home-manager"].locked.rev' flake.lock)
           nix eval --no-write-lock-file --raw \
-            --override-input nixpkgs "github:NixOS/nixpkgs/$rev" \
+            --override-input nixpkgs "github:NixOS/nixpkgs/$nixpkgs" \
+            --override-input home-manager "github:nix-community/home-manager/$home_manager" \
             ./example#nixosConfigurations.demo.config.system.build.toplevel.drvPath
 
   vm-tests:
