@@ -1,7 +1,7 @@
 # agenix-extras
 
-A thin NixOS module that layers two [sops-nix][sops-nix] features on top of
-[agenix][agenix]:
+A thin NixOS and home-manager module that layers two [sops-nix][sops-nix]
+features on top of [agenix][agenix]:
 
 1. **Templates** - render config files with secret placeholders substituted at
    activation time, so plaintext secrets never enter the Nix store.
@@ -56,6 +56,11 @@ handles change detection at eval time with no runtime state.
   };
 }
 ```
+
+agenix-extras also has a `home-manager` input, used only by its own tests. If
+your flake has home-manager too, add
+`agenix-extras.inputs.home-manager.follows = "home-manager";` so your lock file
+doesn't carry a second copy.
 
 A complete working example lives in [`example/`](./example).
 
@@ -141,9 +146,55 @@ hash differs. Affected units will restart on the next switch.
 Entries must be full unit names with a type suffix (`nginx.service`, not
 `nginx`); anything else fails evaluation.
 
+## home-manager
+
+`homeManagerModules.default` brings the same `age.templates` and
+`restartUnits` / `reloadUnits` options to agenix's home-manager module, for
+user units. It imports agenix's home-manager module itself:
+
+```nix
+{ config, pkgs, ... }: {
+  imports = [ agenix-extras.homeManagerModules.default ];
+
+  age.identityPaths = [ "${config.home.homeDirectory}/.ssh/id_ed25519" ];
+  age.secrets.api-token.file = ./secrets/api-token.age;
+
+  age.templates."app.toml" = {
+    content = ''
+      token = "${config.age.placeholder.api-token}"
+    '';
+    restartUnits = [ "myapp.service" ];
+  };
+
+  systemd.user.services.myapp.Service.ExecStart =
+    "${pkgs.myapp}/bin/myapp --config ${config.age.templates."app.toml".path}";
+}
+```
+
+Use it in `home-manager.users.<name>.imports` (or `home-manager.sharedModules`)
+with home-manager's NixOS module, or in the `modules` of a standalone
+`homeManagerConfiguration`. It works the same way as the NixOS module, with
+these differences:
+
+- Templates render to `${XDG_RUNTIME_DIR}/agenix-extras/<name>` (mode 0700,
+  next to agenix's own home-manager secrets), as the user, so there are no
+  `owner` and `group` options. Paths may start with `${XDG_RUNTIME_DIR}`,
+  `${HOME}` or another environment variable, like agenix's own; only that
+  `${VAR}` form is expanded, and nothing in a path is ever run.
+- Templates are rendered by agenix's own `agenix.service` (as `ExecStartPost`),
+  right after it decrypts, so they need agenix to be enabled.
+- On a switch, home-manager applies unit changes with sd-switch. Before that,
+  agenix-extras runs `agenix.service` once with the new units, so units in
+  `reloadUnits` reload the new files. The triggers go into a drop-in that also
+  orders the unit after `agenix.service`.
+- sd-switch only acts on units home-manager manages, and on a template
+  instance (`foo@bar.service`) only through its template. Naming any other
+  unit produces a warning; name the template (`foo@.service`) to restart or
+  reload all of its instances.
+
 ## Tests
 
-Three NixOS VM tests live under [`tests/`](./tests):
+Four NixOS VM tests live under [`tests/`](./tests):
 
 - **`templates`** - boots a VM with the example module
   ([`example/module.nix`](./example/module.nix)) and asserts the rendered file
@@ -164,6 +215,11 @@ Three NixOS VM tests live under [`tests/`](./tests):
   rendering happens in `agenix-extras.service`. The template is owned by a user
   that only exists once userborn has run, and switching to a changed secret
   must re-render it.
+- **`home-manager`** - the home-manager module in a real user session (with
+  home-manager's NixOS module and a lingering user): the template is rendered
+  at login and private to the user, and switching to a changed secret
+  re-renders it, reloads the unit in `reloadUnits` with the new contents, and
+  restarts the one in `restartUnits`.
 
 Run locally (needs `/dev/kvm`):
 
@@ -172,13 +228,15 @@ nix flake check                                # all tests
 nix build .#checks.x86_64-linux.templates      # one at a time
 nix build .#checks.x86_64-linux.restart-on-change
 nix build .#checks.x86_64-linux.sysusers
+nix build .#checks.x86_64-linux.home-manager
 ```
 
-Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
+Besides the VM tests, `checks` has four cheap ones: `formatting` (`nixfmt
 --check` over the tree), `example`, which evaluates
-[`example/configuration.nix`](./example/configuration.nix), and `eval`
-([`tests/eval.nix`](./tests/eval.nix)), which evaluates small configs and
-compares the module's assertion messages.
+[`example/configuration.nix`](./example/configuration.nix), and `eval` and
+`eval-home` ([`tests/eval.nix`](./tests/eval.nix),
+[`tests/eval-home.nix`](./tests/eval-home.nix)), which evaluate small configs
+and compare the modules' assertions, warnings and generated units.
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 evaluates every check, builds the cheap ones, evaluates the
@@ -194,12 +252,15 @@ files. Never reuse them.
 
 ## Limitations
 
-- **Linux only.** agenix supports Darwin via launchd, but the post-activation
-  hook this module installs is wired as a NixOS activation script. Porting to
-  launchd would mean reshaping `system.activationScripts.agenix-extras` into a
-  daemon ordered after `activate-agenix`.
+- **Linux only.** agenix supports Darwin via launchd, but both modules hook
+  into systemd: the NixOS module into activation and agenix's units, the
+  home-manager module into agenix's `agenix.service` user unit. On macOS the
+  home-manager module can be imported, but using templates or
+  `restartUnits` / `reloadUnits` fails an assertion.
 
-- **No home-manager module.** Only the NixOS module is provided.
+- **home-manager templates aren't on a ramfs.** `${XDG_RUNTIME_DIR}` is a
+  tmpfs (which can be swapped to disk) and a user can't mount a ramfs; agenix's
+  own home-manager secrets live there too.
 
 - **Templates cannot supply `hashedPasswordFile`.** Templates render *after*
   users are created (chain: `agenixInstall → users → agenixChown →

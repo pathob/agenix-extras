@@ -9,6 +9,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Only for the home-manager module's tests; the module itself works with
+    # whichever home-manager it is imported into.
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     systems.url = "github:nix-systems/default";
   };
 
@@ -17,6 +24,7 @@
       self,
       nixpkgs,
       agenix,
+      home-manager,
       systems,
     }:
 
@@ -33,6 +41,15 @@
       };
 
       nixosModules.default = self.nixosModules.agenix-extras;
+
+      homeManagerModules.agenix-extras = {
+        imports = [
+          agenix.homeManagerModules.default
+          ./modules/agenix-extras-home.nix
+        ];
+      };
+
+      homeManagerModules.default = self.homeManagerModules.agenix-extras;
 
       formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
 
@@ -68,6 +85,8 @@
             );
 
           eval = import ./tests/eval.nix { inherit pkgs self; };
+          eval-home = import ./tests/eval-home.nix { inherit pkgs self home-manager; };
+          home-manager = import ./tests/home-manager.nix { inherit pkgs self home-manager; };
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
           sysusers = import ./tests/sysusers.nix { inherit pkgs self; };
