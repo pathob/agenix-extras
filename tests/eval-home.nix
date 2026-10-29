@@ -76,6 +76,17 @@ let
       warnings = [ ];
     };
 
+    agenix-secrets-dir = {
+      module.age.templates.t = {
+        content = "x";
+        path = "\${XDG_RUNTIME_DIR}/agenix";
+      };
+      assertions = [
+        "age.templates.t.path is age.secretsDir or age.secretsMountPoint, or inside one, which agenix replaces on every run; got: \${XDG_RUNTIME_DIR}/agenix"
+      ];
+      warnings = [ ];
+    };
+
     relative-path = {
       module.age.templates.t = {
         content = "x";
@@ -117,12 +128,13 @@ let
       ];
     };
 
-    instance = {
-      module.age.secrets.token.restartUnits = [ "foo@bar.service" ];
-      assertions = [ ];
-      warnings = [
-        "agenix-extras: `foo@bar.service` in restartUnits/reloadUnits is a template instance, but home-manager applies changes per template. List `foo@.service` instead, which restarts or reloads all of its instances."
+    # `$VAR/...` and `${VAR}/...` are the same directory.
+    secret-in-rendered-dir = {
+      module.age.secrets.token.path = "$XDG_RUNTIME_DIR/agenix-extras/token";
+      assertions = [
+        "agenix-extras: age.secrets.token.path is inside \${XDG_RUNTIME_DIR}/agenix-extras, where everything that isn't a template is removed; got: $XDG_RUNTIME_DIR/agenix-extras/token"
       ];
+      warnings = [ ];
     };
 
     dotted-instance = {
@@ -130,6 +142,14 @@ let
       assertions = [ ];
       warnings = [
         "agenix-extras: `foo@alice.smith.service` in restartUnits/reloadUnits is a template instance, but home-manager applies changes per template. List `foo@.service` instead, which restarts or reloads all of its instances."
+      ];
+    };
+
+    instance = {
+      module.age.secrets.token.restartUnits = [ "foo@bar.service" ];
+      assertions = [ ];
+      warnings = [
+        "agenix-extras: `foo@bar.service` in restartUnits/reloadUnits is a template instance, but home-manager applies changes per template. List `foo@.service` instead, which restarts or reloads all of its instances."
       ];
     };
   };

@@ -184,6 +184,48 @@ rec {
       ${extra}
     '';
 
+    # agenix's secrets directory and mount point, which it replaces on every
+    # run.
+    agenixDirs = lib.filter (d: d != null) [
+      (cfg.secretsDir or null)
+      (cfg.secretsMountPoint or null)
+    ];
+
+    # agenix's directories and the enabled secrets' paths, with the option
+    # each comes from.
+    agenixFiles =
+      lib.optional (cfg ? secretsDir) {
+        option = "age.secretsDir";
+        path = cfg.secretsDir;
+      }
+      ++ lib.optional (cfg ? secretsMountPoint) {
+        option = "age.secretsMountPoint";
+        path = cfg.secretsMountPoint;
+      }
+      ++ lib.mapAttrsToList (n: s: {
+        option = "age.secrets.${n}.path";
+        inherit (s) path;
+      }) (lib.filterAttrs (_: s: (s.enable or true) && s ? path) secrets);
+
+    # Where agenix puts the enabled secrets.
+    secretPaths = lib.mapAttrsToList (_: s: s.path) (
+      lib.filterAttrs (_: s: (s.enable or true) && s ? path) secrets
+    );
+
+    # Whether `path` is `dir` or inside it, as written, with `$VAR/...` and
+    # `${VAR}/...` taken as the same.
+    isWithin =
+      dir: path:
+      let
+        normalise =
+          p:
+          let
+            m = builtins.match "[$]([A-Za-z_][A-Za-z0-9_]*)(/.*)?" p;
+          in
+          if m == null then p else "\${${builtins.elemAt m 0}}${lib.defaultTo "" (builtins.elemAt m 1)}";
+      in
+      normalise path == normalise dir || lib.hasPrefix "${normalise dir}/" (normalise path);
+
     # Every template's path, one per line, for pruning stale files.
     templatePaths = pkgs.writeText "agenix-extras-paths" (
       lib.concatLines (lib.mapAttrsToList (_: t: t.path) templates)
@@ -222,6 +264,25 @@ rec {
         assertion = t.path != renderedDir;
         message = "age.templates.${name}.path is the directory templates are rendered into; use a file in it, e.g. ${renderedDir}/${name}.";
       }) templates
+      # agenix replaces its secrets directory (a symlink to the current
+      # generation) and the generation directories under its mount point on
+      # every run: a template rendered as or into one of them breaks agenix
+      # or overwrites a secret, and is deleted on the next run.
+      ++ lib.mapAttrsToList (name: t: {
+        assertion = !(lib.any (d: isWithin d t.path) agenixDirs);
+        message = "age.templates.${name}.path is age.secretsDir or age.secretsMountPoint, or inside one, which agenix replaces on every run; got: ${t.path}";
+      }) templates
+      # Nor where agenix puts a secret, which the template would replace.
+      ++ lib.mapAttrsToList (name: t: {
+        assertion = !(lib.any (s: isWithin s t.path && isWithin t.path s) secretPaths);
+        message = "age.templates.${name}.path is where agenix puts a secret; got: ${t.path}";
+      }) templates
+      # Conversely, everything in the default directory that isn't a template
+      # is removed, agenix's own files included.
+      ++ map (f: {
+        assertion = !(isWithin renderedDir f.path);
+        message = "agenix-extras: ${f.option} is inside ${renderedDir}, where everything that isn't a template is removed; got: ${f.path}";
+      }) agenixFiles
       ++ lib.mapAttrsToList (path: names: {
         assertion = lib.length names == 1;
         message = "age.templates: ${lib.concatStringsSep ", " names} all render to ${path}.";
