@@ -380,18 +380,10 @@ in
           && builtins.match ".*(//|/\\./|/\\.\\./).*|.*/(\\.|\\.\\.)?" t.path == null;
         message = "age.templates.${name}.path must be an absolute path without `.`, `..` or empty components; got: ${t.path}";
       }) templates
-      ++ [
-        {
-          assertion =
-            let
-              paths = lib.mapAttrsToList (_: t: t.path) templates;
-            in
-            lib.length paths == lib.length (lib.unique paths);
-          message =
-            "age.templates: multiple templates render to the same path:\n  "
-            + lib.concatStringsSep "\n  " (lib.mapAttrsToList (n: t: "${n} -> ${t.path}") templates);
-        }
-      ]
+      ++ lib.mapAttrsToList (path: names: {
+        assertion = lib.length names == 1;
+        message = "age.templates: ${lib.concatStringsSep ", " names} all render to ${path}.";
+      }) (lib.groupBy' (names: n: names ++ [ n ]) [ ] (n: templates.${n}.path) (lib.attrNames templates))
       ++ lib.concatLists (
         lib.mapAttrsToList (
           name: t:

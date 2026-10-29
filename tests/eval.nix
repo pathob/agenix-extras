@@ -101,10 +101,13 @@ let
           content = "y";
           path = "/run/x";
         };
+        # Not involved, so not mentioned.
+        c = {
+          content = "z";
+          path = "/run/y";
+        };
       };
-      expect = [
-        "age.templates: multiple templates render to the same path:\n  a -> /run/x\n  b -> /run/x"
-      ];
+      expect = [ "age.templates: a, b all render to /run/x." ];
     };
 
     secret-disabled = {
