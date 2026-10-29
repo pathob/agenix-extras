@@ -1,0 +1,55 @@
+name: Update flake.lock
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+env:
+  BRANCH: update-flake-lock
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Update flake.lock
+        id: update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          before=$(git rev-parse HEAD)
+          # Commits only if an input changed; the message lists the changes.
+          nix flake update --commit-lock-file --commit-lockfile-summary "chore: update flake.lock"
+          if [ "$(git rev-parse HEAD)" = "$before" ]; then
+            echo "flake.lock is up to date"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open or update pull request
+        if: steps.update.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push --force origin "$BRANCH"
+          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr create --head "$BRANCH" --title "chore: update flake.lock" \
+              --body "$(git log -1 --format=%b)"
+          fi
+          # Pull requests opened with GITHUB_TOKEN don't trigger `pull_request`
+          # workflows; `workflow_dispatch` is the exception, so start CI directly.
+          gh workflow run ci.yml --ref "$BRANCH"
