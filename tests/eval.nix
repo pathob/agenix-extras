@@ -152,6 +152,30 @@ let
   placeholderIsReadOnly =
     !(builtins.tryEval (eval { age.placeholder.token = "x"; }).age.placeholder).success;
 
+  # Option values that should hold, by description.
+  values =
+    let
+      config = eval {
+        users.users.svc = {
+          isSystemUser = true;
+          group = "svcgroup";
+        };
+        users.groups.svcgroup = { };
+        age.templates = {
+          owned = {
+            content = "x";
+            owner = "svc";
+          };
+          unowned.content = "x";
+        };
+      };
+    in
+    {
+      "template group defaults to the owner's primary group" =
+        config.age.templates.owned.group == "svcgroup";
+      "template group defaults to 0 for the default owner" = config.age.templates.unowned.group == "0";
+    };
+
   # Regression: these used to fail evaluation ("attribute 'agenix' missing").
   evaluates = map (m: (eval m).system.build.toplevel.drvPath) [
     {
@@ -164,7 +188,10 @@ let
     }
   ];
 
-  errors = mismatches ++ lib.optional (!placeholderIsReadOnly) "age.placeholder can be set by users";
+  errors =
+    mismatches
+    ++ lib.optional (!placeholderIsReadOnly) "age.placeholder can be set by users"
+    ++ lib.mapAttrsToList (name: _: "does not hold: ${name}") (lib.filterAttrs (_: ok: !ok) values);
 in
 
 assert lib.assertMsg (errors == [ ]) (

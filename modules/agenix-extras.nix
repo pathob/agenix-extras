@@ -19,6 +19,7 @@ let
 
   templates = cfg.templates;
   secrets = cfg.secrets;
+  users = config.users.users;
 
   placeholderFor = name: "<AGENIX:${builtins.hashString "sha256" name}:PLACEHOLDER>";
 
@@ -126,8 +127,12 @@ let
 
         group = lib.mkOption {
           type = lib.types.str;
-          default = "0";
-          description = "Group of the rendered file.";
+          # Same default as agenix uses for secrets.
+          default = (lib.findFirst (u: u.name == config.owner) { } (lib.attrValues users)).group or "0";
+          defaultText = lib.literalExpression ''
+            (findFirst (u: u.name == config.owner) { } (attrValues users)).group or "0"
+          '';
+          description = "Group of the rendered file. Defaults to the primary group of `owner`, like agenix secrets.";
         };
 
         restartUnits = lib.mkOption {
