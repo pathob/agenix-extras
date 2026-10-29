@@ -90,6 +90,12 @@ previous file stays in place, the other templates are still rendered, and the
 activation is reported as failed. Files in `/run/agenix-extras` that no longer
 belong to a template are removed.
 
+Templates are rendered by an activation script that runs after agenix has
+decrypted and chowned its secrets. With `systemd.sysusers.enable` or
+`services.userborn.enable`, agenix decrypts from systemd units instead, so
+templates are rendered by `agenix-extras.service`, ordered after
+`agenix-chown.service` and re-run whenever agenix re-decrypts.
+
 > **Changed default.** Earlier versions rendered to `/run/agenix/rendered/`,
 > inside agenix's generation directory. Configs that reference
 > `config.age.templates.<name>.path` pick up the new location automatically;
@@ -119,7 +125,7 @@ Supported unit kinds: `service`, `socket`, `timer`, `path`, `target`,
 
 ## Tests
 
-Two NixOS VM tests live under [`tests/`](./tests):
+Three NixOS VM tests live under [`tests/`](./tests):
 
 - **`templates`** - boots a VM with the example module
   ([`example/module.nix`](./example/module.nix)) and asserts the rendered file
@@ -133,13 +139,18 @@ Two NixOS VM tests live under [`tests/`](./tests):
   secret that has `restartUnits = [ "demo.service" ]`. Switches to a
   specialisation whose `.age` file decrypts to different plaintext and asserts
   the service got a new PID.
+- **`sysusers`** - same template checks with `services.userborn.enable`, where
+  rendering happens in `agenix-extras.service`. The template is owned by a user
+  that only exists once userborn has run, and switching to a changed secret
+  must re-render it.
 
 Run locally (needs `/dev/kvm`):
 
 ```sh
-nix flake check                                # both tests
+nix flake check                                # all tests
 nix build .#checks.x86_64-linux.templates      # one at a time
 nix build .#checks.x86_64-linux.restart-on-change
+nix build .#checks.x86_64-linux.sysusers
 ```
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
@@ -160,10 +171,11 @@ files. Never reuse them.
 - **No home-manager module.** Only the NixOS module is provided.
 
 - **Templates cannot supply `hashedPasswordFile`.** Templates render *after*
-  the `users` activation snippet (chain: `agenixInstall → users → agenixChown
-  → agenix-extras`). Setting `owner` to any declared user works fine, but you
-  cannot point `users.users.<n>.hashedPasswordFile` at a rendered template
-  because `users` runs first and needs the file to already exist.
+  users are created (chain: `agenixInstall → users → agenixChown →
+  agenix-extras`, or the equivalent systemd units under sysusers/userborn).
+  Setting `owner` to any declared user works fine, but you cannot point
+  `users.users.<n>.hashedPasswordFile` at a rendered template because users
+  are created first and need the file to already exist.
 
 - **`age.templates.<name>.path` must be in a root-only directory.** Rendering
   writes a temporary file next to `path` and renames it into place, so the

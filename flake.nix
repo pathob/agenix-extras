@@ -53,6 +53,7 @@
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
+          sysusers = import ./tests/sysusers.nix { inherit pkgs self; };
         }
       );
     };

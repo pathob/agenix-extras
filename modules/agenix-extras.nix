@@ -1,5 +1,6 @@
 {
   config,
+  options,
   lib,
   pkgs,
   ...
@@ -7,6 +8,14 @@
 
 let
   cfg = config.age;
+
+  # Same detection agenix uses to decide between activation scripts and
+  # systemd units.
+  sysusersEnabled =
+    options.systemd ? sysusers
+    && (
+      config.systemd.sysusers.enable || (options.services ? userborn && config.services.userborn.enable)
+    );
 
   templates = cfg.templates;
   secrets = cfg.secrets;
@@ -389,11 +398,22 @@ in
             "age.templates: multiple templates render to the same path:\n  "
             + lib.concatStringsSep "\n  " (lib.mapAttrsToList (n: t: "${n} -> ${t.path}") templates);
         }
-      ];
+      ]
+      ++ lib.concatLists (
+        lib.mapAttrsToList (
+          name: t:
+          map (n: {
+            assertion = (cfg.enable or true) && (secrets.${n}.enable or true);
+            message = "age.templates.${name} uses age.secrets.${n}, which is not decrypted because ${
+              if cfg.enable or true then "age.secrets.${n}.enable" else "age.enable"
+            } is false.";
+          }) (referencedSecrets t)
+        ) templates
+      );
 
     # Runs even without templates so that removing the last one still prunes
     # its rendered file.
-    system.activationScripts.agenix-extras = {
+    system.activationScripts.agenix-extras = lib.mkIf (!sysusersEnabled) {
       # A failure here is recorded by the activation script's ERR trap
       # (marking this snippet and the switch as failed) without stopping the
       # snippets that run after it.
@@ -409,6 +429,54 @@ in
     systemd = lib.mkMerge [
       (triggersFor "restartUnits" "restartTriggers")
       (triggersFor "reloadUnits" "reloadTriggers")
+
+      # Under systemd-sysusers/userborn agenix decrypts from systemd units in
+      # sysinit.target instead of activation scripts, and users only exist
+      # once sysusers has run, so render from a unit ordered after both.
+      #
+      # On a switch, units that changed are stopped before activation and
+      # started again later, but reloads happen before that. Like
+      # systemd-sysusers and userborn, decryption, chown and rendering are
+      # therefore part of sysinit-reactivation.target, which
+      # switch-to-configuration restarts (starting whatever was stopped, in
+      # order) before it reloads anything. Otherwise consumers in reloadUnits
+      # would reload the previous file.
+      (lib.mkIf sysusersEnabled {
+        services = {
+          agenix-extras = {
+            description = "Render agenix-extras templates";
+            wantedBy = [ "sysinit.target" ];
+            requiredBy = [ "sysinit-reactivation.target" ];
+            # Without default dependencies, sysinit.target isn't ordered after
+            # us automatically; normal services must wait for rendering.
+            before = [
+              "sysinit.target"
+              "sysinit-reactivation.target"
+            ];
+            after = [
+              "systemd-sysusers.service"
+              "agenix-install-secrets.service"
+              "agenix-chown.service"
+            ];
+            # Re-render whenever agenix re-decrypts, in the same transaction and
+            # therefore after it. The script itself changes with the templates.
+            partOf = [ "agenix-install-secrets.service" ];
+            unitConfig.DefaultDependencies = false;
+            serviceConfig = {
+              Type = "oneshot";
+              RemainAfterExit = true;
+              ExecStart = renderAll;
+            };
+          };
+        }
+        // lib.genAttrs [ "agenix-install-secrets" "agenix-chown" ] (
+          _:
+          lib.mkIf (cfg.enable or true) {
+            requiredBy = [ "sysinit-reactivation.target" ];
+            before = [ "sysinit-reactivation.target" ];
+          }
+        );
+      })
     ];
 
     warnings =
