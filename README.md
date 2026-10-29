@@ -20,17 +20,18 @@ features to agenix users who prefer the simpler one-secret-per-file model.
 
 agenix is consumed as a flake input here, unmodified - downstream projects
 point `inputs.agenix-extras.inputs.agenix.follows` at their own agenix pin.
-Restart/reload is wired through NixOS's standard `restartTriggers` /
-`reloadTriggers` on the named units, so `switch-to-configuration` handles
-change detection at eval time with no runtime state.
+Restart/reload is wired through the same `X-Restart-Triggers` /
+`X-Reload-Triggers` keys NixOS's own `restartTriggers` / `reloadTriggers`
+produce, added to each named unit as a drop-in, so `switch-to-configuration`
+handles change detection at eval time with no runtime state.
 
 [agenix]: https://github.com/ryantm/agenix
 [sops-nix]: https://github.com/Mic92/sops-nix
 
 > **AI-generated.** This project was initially written by Claude Opus 4.7
-> (Anthropic). It is exercised by two NixOS VM tests (see [Tests](#tests))
-> covering both features, but is not yet mature - treat it as a starting
-> point, not a vetted dependency.
+> (Anthropic). It is exercised by NixOS VM tests and evaluation tests (see
+> [Tests](#tests)) covering both features, but is not yet mature - treat it as
+> a starting point, not a vetted dependency.
 
 ## Usage
 
