@@ -39,7 +39,7 @@ change detection at eval time with no runtime state.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     agenix.url = "github:ryantm/agenix";
-    agenix-extras.url = "github:you/agenix-extras";
+    agenix-extras.url = "github:pathob/agenix-extras";
     agenix-extras.inputs.agenix.follows = "agenix";
     agenix-extras.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -82,6 +82,16 @@ Substitution is done with `replace-secret` from nixpkgs: the *template* (with
 opaque `<AGENIX:…:PLACEHOLDER>` markers, no plaintext) goes into the Nix store;
 the plaintext is read from `/run/agenix/<secret-name>` at activation time and
 written only to `/run/agenix-extras/<name>`.
+
+Leading and trailing newlines of a secret are stripped when it is substituted,
+so a secret file created with `echo` doesn't break a one-line value.
+
+Instead of `content`, a template can come from a `file`. It has to contain the
+placeholders, so it is usually generated. The file is read at evaluation time
+to find out which secrets it uses. Prefer `builtins.toFile`, which writes it
+during evaluation; a file built by a derivation such as `pkgs.writeText` needs
+import from derivation. Neither can be read in a read-only evaluation such as
+`nix flake check --no-build`, unless the file is already in the store.
 
 `/run/agenix-extras` is a ramfs, like agenix's own `/run/agenix.d`, so
 rendered plaintext is never swapped to disk. Each rendered file is replaced

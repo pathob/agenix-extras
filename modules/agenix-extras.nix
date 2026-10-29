@@ -106,6 +106,9 @@ let
           default = null;
           description = ''
             Path to a file used as the template, as an alternative to `content`.
+            The file is read at evaluation time to find its placeholders, so
+            prefer `builtins.toFile` to a derivation such as `pkgs.writeText`,
+            which would need import from derivation.
           '';
         };
 
