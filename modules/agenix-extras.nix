@@ -19,6 +19,7 @@ let
 
   templates = cfg.templates;
   secrets = cfg.secrets;
+  users = config.users.users;
 
   placeholderFor = name: "<AGENIX:${builtins.hashString "sha256" name}:PLACEHOLDER>";
 
@@ -113,9 +114,18 @@ let
         };
 
         mode = lib.mkOption {
-          type = lib.types.str;
+          # Octal (`0440`, also with leading zeros or an operator like `=0440`) or
+          # symbolic (`u=r,g=r`): the forms chmod accepts.
+          type =
+            let
+              clause = "[ugoa]*([-+=]([rwxXst]*|[ugo]))+";
+            in
+            lib.types.strMatching "[-+=]?0*[0-7]{1,4}|${clause}(,${clause})*"
+            // {
+              description = "chmod mode (octal like `0440` or symbolic like `u=r,g=r`)";
+            };
           default = "0400";
-          description = "Permissions of the rendered file (chmod format).";
+          description = "Permissions of the rendered file, in a form chmod accepts (octal or symbolic).";
         };
 
         owner = lib.mkOption {
@@ -126,8 +136,12 @@ let
 
         group = lib.mkOption {
           type = lib.types.str;
-          default = "0";
-          description = "Group of the rendered file.";
+          # Same default as agenix uses for secrets.
+          default = (lib.findFirst (u: u.name == config.owner) { } (lib.attrValues users)).group or "0";
+          defaultText = lib.literalExpression ''
+            (findFirst (u: u.name == config.owner) { } (attrValues users)).group or "0"
+          '';
+          description = "Group of the rendered file. Defaults to the primary group of `owner`, like agenix secrets.";
         };
 
         restartUnits = lib.mkOption {
@@ -179,7 +193,7 @@ let
       replace-secret "$1" "$2" "$tmp"
       shift 2
     done
-    chmod "$mode" "$tmp"
+    chmod -- "$mode" "$tmp"
     chown "$owner:$group" "$tmp"
     # -T: fail if `dest` is a directory instead of moving the file into it.
     mv -fT "$tmp" "$dest"
@@ -201,20 +215,39 @@ let
         (placeholderFor n)
         secrets.${n}.path
       ]) (referencedSecrets tpl);
+      render = ''
+        ${renderOne} ${lib.escapeShellArgs args} || {
+          printf '[agenix-extras] failed to render %s\n' ${lib.escapeShellArg tpl.name} >&2
+          failed=1
+        }
+      '';
     in
+    # Decided on where the file is actually written (see `resolve`), so
+    # symlinks such as /var/run -> /run can't get around these checks; a path
+    # that can't be resolved counts as the directory itself.
+    #
+    # - Never replace the default directory itself, by its canonical path or
+    #   its own entry (which may be a symlink to it).
+    # - Never write into it without the ramfs mounted there: it would end up
+    #   on /run, which can be swapped to disk.
     ''
-      ${renderOne} ${lib.escapeShellArgs args} || {
-        printf '[agenix-extras] failed to render %s\n' ${lib.escapeShellArg tpl.name} >&2
+      dest=$(resolve ${lib.escapeShellArg tpl.path}) || dest=$dir
+      if [[ $dest == "$dir" || $dest == "$root" ]]; then
+        printf '[agenix-extras] not rendering %s: %s is the template directory\n' ${lib.escapeShellArg tpl.name} ${lib.escapeShellArg tpl.path} >&2
         failed=1
-      }
+      elif (( ! mounted )) && [[ $dest == "$dir"/* ]]; then
+        printf '[agenix-extras] not rendering %s: %s is not mounted\n' ${lib.escapeShellArg tpl.name} "$dir" >&2
+        failed=1
+      else
+        ${render}
+      fi
     '';
 
-  # Paths in `renderedDir` that belong to a current template. Anything else
-  # in there is left over from a removed or renamed template.
-  renderedManifest = pkgs.writeText "agenix-extras-rendered" (
-    lib.concatLines (
-      lib.filter (lib.hasPrefix "${renderedDir}/") (lib.mapAttrsToList (_: t: t.path) templates)
-    )
+  # Every template's path. Resolved at runtime, these are the files in
+  # `renderedDir` that belong to a current template; anything else in there is
+  # left over from a removed or renamed template.
+  templatePaths = pkgs.writeText "agenix-extras-paths" (
+    lib.concatLines (lib.mapAttrsToList (_: t: t.path) templates)
   );
 
   # Render every template, carrying on past failures so one broken template
@@ -229,25 +262,45 @@ let
       ]
     }
     failed=0
-    dir=${lib.escapeShellArg renderedDir}
+    mounted=0
 
+    # Where a template's file actually ends up: symlinks in the parent
+    # directories are followed, but not a symlink at the path itself, which
+    # the renderer replaces rather than writes through.
+    resolve() {
+      local parent
+      parent=$(realpath -m -- "$(dirname -- "$1")") || return 1
+      printf '%s/%s\n' "''${parent%/}" "$(basename -- "$1")"
+    }
+
+    # The default directory, canonical so the checks below compare like with
+    # like even if it is a symlink (and so `find` lists its contents), and its
+    # own entry, which a template must never replace. Without them, nothing
+    # can be checked safely, so nothing is rendered.
+    dir=$(realpath -m -- ${lib.escapeShellArg renderedDir}) && root=$(resolve ${lib.escapeShellArg renderedDir}) || {
+      printf '[agenix-extras] cannot resolve %s\n' ${lib.escapeShellArg renderedDir} >&2
+      exit 1
+    }
+
+    # If the ramfs can't be mounted, templates at other paths are still
+    # rendered; the ones in the default directory are skipped.
     ${lib.optionalString (templates != { }) ''
-      mkdir -p "$dir"
-      if ! mountpoint -q "$dir"; then
-        mount -t ramfs none "$dir" -o nodev,nosuid,mode=0751 || {
-          printf '[agenix-extras] failed to mount ramfs at %s\n' "$dir" >&2
-          exit 1
-        }
+      if mountpoint -q "$dir" || { mkdir -p "$dir" && mount -t ramfs none "$dir" -o nodev,nosuid,mode=0751; }; then
+        mounted=1
+        chown root:root "$dir"
+        chmod 0751 "$dir"
+      else
+        printf '[agenix-extras] failed to mount ramfs at %s\n' "$dir" >&2
+        failed=1
       fi
-      chown root:root "$dir"
-      chmod 0751 "$dir"
     ''}
 
     # Prune before rendering, so a stale file or directory can't be in the way
     # when a template's path turns into a directory or vice versa.
     if mountpoint -q "$dir"; then
+      expected=$(while IFS= read -r p; do resolve "$p"; done < ${templatePaths})
       while IFS= read -r -d "" f; do
-        if ! grep -Fxq -- "$f" ${renderedManifest}; then
+        if ! grep -Fxq -- "$f" <<< "$expected"; then
           printf '[agenix-extras] removing stale %s\n' "$f"
           rm -f -- "$f"
         fi
@@ -367,26 +420,22 @@ in
         assertion = (t.file == null) != (t.content == null);
         message = "age.templates.${name}: set exactly one of `file` and `content`.";
       }) templates
-      # Normalised, because stale files are pruned by comparing against `path`
-      # verbatim: `/run/agenix-extras/./x` would be rendered and then deleted.
+      # Normalised, so the duplicate-path check below, which compares paths
+      # verbatim, also catches e.g. `/run/agenix-extras/./x` vs `.../x`.
       ++ lib.mapAttrsToList (name: t: {
         assertion =
           lib.hasPrefix "/" t.path
           && builtins.match ".*(//|/\\./|/\\.\\./).*|.*/(\\.|\\.\\.)?" t.path == null;
         message = "age.templates.${name}.path must be an absolute path without `.`, `..` or empty components; got: ${t.path}";
       }) templates
-      ++ [
-        {
-          assertion =
-            let
-              paths = lib.mapAttrsToList (_: t: t.path) templates;
-            in
-            lib.length paths == lib.length (lib.unique paths);
-          message =
-            "age.templates: multiple templates render to the same path:\n  "
-            + lib.concatStringsSep "\n  " (lib.mapAttrsToList (n: t: "${n} -> ${t.path}") templates);
-        }
-      ]
+      ++ lib.mapAttrsToList (name: t: {
+        assertion = t.path != renderedDir;
+        message = "age.templates.${name}.path is the directory templates are rendered into; use a file in it, e.g. ${renderedDir}/${name}.";
+      }) templates
+      ++ lib.mapAttrsToList (path: names: {
+        assertion = lib.length names == 1;
+        message = "age.templates: ${lib.concatStringsSep ", " names} all render to ${path}.";
+      }) (lib.groupBy' (names: n: names ++ [ n ]) [ ] (n: templates.${n}.path) (lib.attrNames templates))
       ++ lib.concatLists (
         lib.mapAttrsToList (
           name: t:

@@ -65,6 +65,14 @@ pkgs.testers.runNixOSTest {
           '';
         };
       };
+
+      # Reaches the default directory through the /var/run -> /run symlink.
+      specialisation.aliased.configuration = {
+        age.templates."alias.conf" = {
+          content = "token = \"${config.age.placeholder.api-token}\"\n";
+          path = "/var/run/agenix-extras/alias.conf";
+        };
+      };
     };
 
   testScript = ''
@@ -149,6 +157,45 @@ pkgs.testers.runNixOSTest {
     inner = machine.succeed("cat /run/agenix-extras/app.toml/inner")
     assert 'token = "tok-AAA"' in inner, inner
 
+    status, out = machine.execute(f"{base}/bin/switch-to-configuration test 2>&1")
+    assert status == 0, out
+    assert rendered == machine.succeed("cat /run/agenix-extras/app.toml")
+
+    # A path that reaches the default directory through a symlink counts as
+    # being in it: it is rendered there, and not pruned as stale on the next
+    # activation.
+    machine.succeed("test $(readlink -f /var/run) = /run")
+    aliased = f"{base}/specialisation/aliased/bin/switch-to-configuration test 2>&1"
+    status, out = machine.execute(aliased)
+    assert status == 0, out
+    alias = machine.succeed("cat /run/agenix-extras/alias.conf")
+    assert 'token = "tok-AAA"' in alias, alias
+    status, out = machine.execute(aliased)
+    assert status == 0, out
+    assert "removing stale" not in out, out
+
+    # If the ramfs can't be mounted (here: a file is in the way), templates at
+    # other paths are still rendered, and nothing is written to the default
+    # directory on plain /run, not even through a symlink.
+    machine.succeed(
+      "umount /run/agenix-extras",
+      "rm -rf /run/agenix-extras && touch /run/agenix-extras",
+      "rm /var/lib/agenix-extras-test/custom.conf",
+    )
+    status, out = machine.execute(f"{base}/bin/switch-to-configuration test 2>&1")
+    custom = machine.succeed("cat /var/lib/agenix-extras-test/custom.conf")
+    assert 'password = "pw-AAA"' in custom, custom
+    assert status != 0, out
+    assert "failed to mount ramfs" in out, out
+    assert "not rendering app.toml" in out, out
+    machine.succeed("test -f /run/agenix-extras && ! test -s /run/agenix-extras")
+    status, out = machine.execute(aliased)
+    assert status != 0, out
+    assert "not rendering alias.conf" in out, out
+    machine.succeed("test -f /run/agenix-extras && ! test -s /run/agenix-extras")
+
+    # Once the obstacle is gone, everything is back.
+    machine.succeed("rm /run/agenix-extras")
     status, out = machine.execute(f"{base}/bin/switch-to-configuration test 2>&1")
     assert status == 0, out
     assert rendered == machine.succeed("cat /run/agenix-extras/app.toml")

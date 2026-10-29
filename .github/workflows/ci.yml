@@ -4,8 +4,12 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Lets the flake.lock update workflow start CI on its pull request.
-  workflow_dispatch:
+
+permissions:
+  contents: read
+  # cache-nix-action deletes outdated caches on main, which needs write
+  # access to the Actions cache.
+  actions: write
 
 jobs:
   flake-check:
@@ -21,6 +25,21 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      # One cache per job (and VM test), keyed on flake.lock, which determines
+      # almost the whole closure. Only runs on main save (and purge) caches;
+      # other branches restore from main's, so PRs don't churn the
+      # repository's cache limit.
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ github.job }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ github.job }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 5G
+          purge: ${{ github.ref == 'refs/heads/main' }}
+          purge-prefixes: nix-${{ runner.os }}-${{ github.job }}-
+          purge-created: 0
+          purge-primary-key: never
 
       # Instantiates every check without building it. Not `nix flake check
       # --no-build`: that evaluates read-only, so files the templates test
@@ -47,6 +66,15 @@ jobs:
           jq -r '.[] | ".#checks.x86_64-linux." + .' <<< '${{ steps.checks.outputs.other }}' \
             | xargs nix build --print-build-logs
 
+      # The README points people at example/ as a flake, with its `path:..`
+      # input. It has no lock of its own, so pin its nixpkgs to ours.
+      - name: Evaluate the example flake
+        run: |
+          rev=$(jq -r .nodes.nixpkgs.locked.rev flake.lock)
+          nix eval --no-write-lock-file --raw \
+            --override-input nixpkgs "github:NixOS/nixpkgs/$rev" \
+            ./example#nixosConfigurations.demo.config.system.build.toplevel.drvPath
+
   vm-tests:
     needs: flake-check
     runs-on: ubuntu-latest
@@ -63,6 +91,18 @@ jobs:
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
+
+      # Same cache setup as in flake-check, with one cache per VM test.
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ github.job }}-${{ matrix.test }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-${{ github.job }}-${{ matrix.test }}-
+          save: ${{ github.ref == 'refs/heads/main' }}
+          gc-max-store-size-linux: 5G
+          purge: ${{ github.ref == 'refs/heads/main' }}
+          purge-prefixes: nix-${{ runner.os }}-${{ github.job }}-${{ matrix.test }}-
+          purge-created: 0
+          purge-primary-key: never
 
       - name: Build and run ${{ matrix.test }}
         run: nix build --print-build-logs .#checks.x86_64-linux.${{ matrix.test }}

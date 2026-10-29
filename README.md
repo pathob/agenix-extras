@@ -20,17 +20,18 @@ features to agenix users who prefer the simpler one-secret-per-file model.
 
 agenix is consumed as a flake input here, unmodified - downstream projects
 point `inputs.agenix-extras.inputs.agenix.follows` at their own agenix pin.
-Restart/reload is wired through NixOS's standard `restartTriggers` /
-`reloadTriggers` on the named units, so `switch-to-configuration` handles
-change detection at eval time with no runtime state.
+Restart/reload is wired through the same `X-Restart-Triggers` /
+`X-Reload-Triggers` keys NixOS's own `restartTriggers` / `reloadTriggers`
+produce, added to each named unit as a drop-in, so `switch-to-configuration`
+handles change detection at eval time with no runtime state.
 
 [agenix]: https://github.com/ryantm/agenix
 [sops-nix]: https://github.com/Mic92/sops-nix
 
 > **AI-generated.** This project was initially written by Claude Opus 4.7
-> (Anthropic). It is exercised by two NixOS VM tests (see [Tests](#tests))
-> covering both features, but is not yet mature - treat it as a starting
-> point, not a vetted dependency.
+> (Anthropic). It is exercised by NixOS VM tests and evaluation tests (see
+> [Tests](#tests)) covering both features, but is not yet mature - treat it as
+> a starting point, not a vetted dependency.
 
 ## Usage
 
@@ -180,10 +181,12 @@ Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
 compares the module's assertion messages.
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
-evaluates every check, builds the cheap ones, and then runs each VM test as
-its own job on `ubuntu-latest` (which has nested KVM). The list of VM tests
-comes from the flake, so a new test only needs adding to `checks`. A weekly
-workflow opens a PR that updates `flake.lock`.
+evaluates every check, builds the cheap ones, evaluates the
+[`example/`](./example) flake itself, and then runs each VM test as its own
+job on `ubuntu-latest` (which has nested KVM). The list of VM tests
+comes from the flake, so a new test only needs adding to `checks`. Dependabot
+opens weekly PRs when a flake input has a newer revision (one PR per input)
+and when an action has a new major version.
 
 The fixtures under `tests/keys/` and `tests/secrets/` are **test-only**: the
 private SSH key is checked in so the test can decrypt the pre-encrypted `.age`

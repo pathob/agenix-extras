@@ -81,6 +81,16 @@ let
       ];
     };
 
+    mount-root-as-path = {
+      module.age.templates.t = {
+        content = "x";
+        path = "/run/agenix-extras";
+      };
+      expect = [
+        "age.templates.t.path is the directory templates are rendered into; use a file in it, e.g. /run/agenix-extras/t."
+      ];
+    };
+
     non-normalised-path = {
       module.age.templates.t = {
         content = "x";
@@ -101,10 +111,13 @@ let
           content = "y";
           path = "/run/x";
         };
+        # Not involved, so not mentioned.
+        c = {
+          content = "z";
+          path = "/run/y";
+        };
       };
-      expect = [
-        "age.templates: multiple templates render to the same path:\n  a -> /run/x\n  b -> /run/x"
-      ];
+      expect = [ "age.templates: a, b all render to /run/x." ];
     };
 
     secret-disabled = {
@@ -152,6 +165,45 @@ let
   placeholderIsReadOnly =
     !(builtins.tryEval (eval { age.placeholder.token = "x"; }).age.placeholder).success;
 
+  modeOk =
+    mode:
+    (builtins.tryEval
+      (eval {
+        age.templates.t = {
+          content = "x";
+          inherit mode;
+        };
+      }).age.templates.t.mode
+    ).success;
+
+  # Option values that should hold, by description.
+  values =
+    let
+      config = eval {
+        users.users.svc = {
+          isSystemUser = true;
+          group = "svcgroup";
+        };
+        users.groups.svcgroup = { };
+        age.templates = {
+          owned = {
+            content = "x";
+            owner = "svc";
+          };
+          unowned.content = "x";
+        };
+      };
+    in
+    {
+      "template group defaults to the owner's primary group" =
+        config.age.templates.owned.group == "svcgroup";
+      "template group defaults to 0 for the default owner" = config.age.templates.unowned.group == "0";
+      "template mode accepts symbolic modes" = modeOk "u=r,g=r";
+      "template mode accepts leading zeros" = modeOk "000440";
+      "template mode accepts an operator before octal" = modeOk "=0440";
+      "template mode rejects ls-style modes" = !(modeOk "rw-r-----");
+    };
+
   # Regression: these used to fail evaluation ("attribute 'agenix' missing").
   evaluates = map (m: (eval m).system.build.toplevel.drvPath) [
     {
@@ -164,7 +216,10 @@ let
     }
   ];
 
-  errors = mismatches ++ lib.optional (!placeholderIsReadOnly) "age.placeholder can be set by users";
+  errors =
+    mismatches
+    ++ lib.optional (!placeholderIsReadOnly) "age.placeholder can be set by users"
+    ++ lib.mapAttrsToList (name: _: "does not hold: ${name}") (lib.filterAttrs (_: ok: !ok) values);
 in
 
 assert lib.assertMsg (errors == [ ]) (
