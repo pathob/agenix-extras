@@ -389,8 +389,10 @@ in
           name: t:
           map (n: {
             assertion = (cfg.enable or true) && (secrets.${n}.enable or true);
+            # Name the secret's own flag first: agenix's `age.enable` defaults
+            # to "any secret enabled", so it is a consequence, not the cause.
             message = "age.templates.${name} uses age.secrets.${n}, which is not decrypted because ${
-              if cfg.enable or true then "age.secrets.${n}.enable" else "age.enable"
+              if !(secrets.${n}.enable or true) then "age.secrets.${n}.enable" else "age.enable"
             } is false.";
           }) (referencedSecrets t)
         ) templates

@@ -67,6 +67,7 @@
               builtins.unsafeDiscardStringContext example.config.system.build.toplevel.drvPath
             );
 
+          eval = import ./tests/eval.nix { inherit pkgs self; };
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
           sysusers = import ./tests/sysusers.nix { inherit pkgs self; };

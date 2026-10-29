@@ -163,9 +163,11 @@ nix build .#checks.x86_64-linux.restart-on-change
 nix build .#checks.x86_64-linux.sysusers
 ```
 
-Besides the VM tests, `checks` has two cheap ones: `formatting` (`nixfmt
---check` over the tree) and `example`, which evaluates
-[`example/configuration.nix`](./example/configuration.nix).
+Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
+--check` over the tree), `example`, which evaluates
+[`example/configuration.nix`](./example/configuration.nix), and `eval`
+([`tests/eval.nix`](./tests/eval.nix)), which evaluates small configs and
+compares the module's assertion messages.
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
 an eval-only `nix flake check --no-build`, builds the cheap checks, and then
