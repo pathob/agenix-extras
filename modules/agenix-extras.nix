@@ -8,6 +8,18 @@
 
 let
   cfg = config.age;
+  extras = import ./lib.nix { inherit lib pkgs; };
+  inherit (extras.forConfig cfg)
+    secrets
+    templates
+    triggeredUnits
+    dropInText
+    templatePaths
+    renderArgs
+    assertions
+    agenixDirs
+    secretPaths
+    ;
 
   # Same detection agenix uses to decide between activation scripts and
   # systemd units.
@@ -17,48 +29,7 @@ let
       config.systemd.sysusers.enable || (options.services ? userborn && config.services.userborn.enable)
     );
 
-  templates = cfg.templates;
-  secrets = cfg.secrets;
   users = config.users.users;
-
-  placeholderFor = name: "<AGENIX:${builtins.hashString "sha256" name}:PLACEHOLDER>";
-
-  # The store path Nix evaluation should track for `restartTriggers` /
-  # `reloadTriggers`. For agenix secrets that's the encrypted `.age` file (the
-  # plaintext only exists at runtime, but its inputs are the ciphertext +
-  # identity, and the identity is fixed per host so the ciphertext is what
-  # changes). For templates it's the source file plus every referenced secret's
-  # `.age`, because a template's output depends on both.
-  secretTrigger = name: toStorePath secrets.${name}.file;
-
-  # Copy a Nix path into the store, as NixOS's own restartTriggers do. Plain
-  # `toString` keeps a path outside the store (e.g. `/etc/nixos/x.age` in a
-  # non-flake config) as-is, so editing the file wouldn't change the trigger.
-  toStorePath = x: if lib.isPath x then "${x}" else x;
-  templateTriggers = tpl: [ (templateSource tpl) ] ++ map secretTrigger (referencedSecrets tpl);
-
-  # Plain text of a template, for placeholder discovery at eval time. Setting
-  # neither `file` nor `content` fails an assertion, but the assertions
-  # themselves scan the text, so that case reads as empty here.
-  templateText =
-    tpl: if tpl.file != null then builtins.readFile tpl.file else lib.defaultTo "" tpl.content;
-
-  # Names of the secrets whose placeholder appears in the template.
-  referencedSecrets =
-    tpl:
-    let
-      text = templateText tpl;
-    in
-    lib.filter (n: lib.hasInfix (placeholderFor n) text) (lib.attrNames secrets);
-
-  templateSource =
-    tpl:
-    if tpl.file != null then
-      toStorePath tpl.file
-    else
-      pkgs.writeText "agenix-template-${lib.strings.sanitizeDerivationName tpl.name}" (
-        lib.defaultTo "" tpl.content
-      );
 
   # Default location for rendered templates. Deliberately outside agenix's
   # generation directories: agenix swaps `/run/agenix` to a fresh, empty
@@ -68,153 +39,59 @@ let
   # swapped to disk.
   renderedDir = "/run/agenix-extras";
 
+  unitOptions = extras.unitListOptions {
+    units = "Units";
+    switch = "switch-to-configuration";
+    example = [ "nginx.service" ];
+    changes = "this template";
+  };
+
   templateType = lib.types.submodule (
     { name, config, ... }:
     {
-      options = {
-        name = lib.mkOption {
-          type = lib.types.str;
-          default = name;
-          description = "File name of the rendered template.";
-        };
+      options =
+        extras.templateOptions {
+          inherit
+            name
+            config
+            renderedDir
+            unitOptions
+            ;
+        }
+        // {
+          owner = lib.mkOption {
+            type = lib.types.str;
+            default = "0";
+            description = "Owner of the rendered file.";
+          };
 
-        path = lib.mkOption {
-          type = lib.types.str;
-          default = "${renderedDir}/${config.name}";
-          defaultText = lib.literalExpression ''"${renderedDir}/''${config.name}"'';
-          description = ''
-            Path where the rendered file is written. The file is replaced
-            atomically, and kept as-is if rendering fails.
-
-            Files in the default directory that no longer belong to a template
-            are removed on activation. Files at other paths are not.
-          '';
+          group = lib.mkOption {
+            type = lib.types.str;
+            # Same default as agenix uses for secrets.
+            default = (lib.findFirst (u: u.name == config.owner) { } (lib.attrValues users)).group or "0";
+            defaultText = lib.literalExpression ''
+              (findFirst (u: u.name == config.owner) { } (attrValues users)).group or "0"
+            '';
+            description = "Group of the rendered file. Defaults to the primary group of `owner`, like agenix secrets.";
+          };
         };
-
-        content = lib.mkOption {
-          type = lib.types.nullOr lib.types.lines;
-          default = null;
-          description = ''
-            Template body. Exactly one of `content` and `file` must be set.
-            Reference decrypted secrets via
-            `''${config.age.placeholder.<secret-name>}`; the placeholder is
-            substituted with the secret's plaintext at activation time.
-          '';
-        };
-
-        file = lib.mkOption {
-          type = lib.types.nullOr lib.types.path;
-          default = null;
-          description = ''
-            Path to a file used as the template, as an alternative to `content`.
-            The file is read at evaluation time to find its placeholders, so
-            prefer `builtins.toFile` to a derivation such as `pkgs.writeText`,
-            which would need import from derivation.
-          '';
-        };
-
-        mode = lib.mkOption {
-          # Octal (`0440`, also with leading zeros or an operator like `=0440`) or
-          # symbolic (`u=r,g=r`): the forms chmod accepts.
-          type =
-            let
-              clause = "[ugoa]*([-+=]([rwxXst]*|[ugo]))+";
-            in
-            lib.types.strMatching "[-+=]?0*[0-7]{1,4}|${clause}(,${clause})*"
-            // {
-              description = "chmod mode (octal like `0440` or symbolic like `u=r,g=r`)";
-            };
-          default = "0400";
-          description = "Permissions of the rendered file, in a form chmod accepts (octal or symbolic).";
-        };
-
-        owner = lib.mkOption {
-          type = lib.types.str;
-          default = "0";
-          description = "Owner of the rendered file.";
-        };
-
-        group = lib.mkOption {
-          type = lib.types.str;
-          # Same default as agenix uses for secrets.
-          default = (lib.findFirst (u: u.name == config.owner) { } (lib.attrValues users)).group or "0";
-          defaultText = lib.literalExpression ''
-            (findFirst (u: u.name == config.owner) { } (attrValues users)).group or "0"
-          '';
-          description = "Group of the rendered file. Defaults to the primary group of `owner`, like agenix secrets.";
-        };
-
-        restartUnits = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          example = [ "nginx.service" ];
-          description = "Units restarted by switch-to-configuration when this template changes.";
-        };
-
-        reloadUnits = lib.mkOption {
-          type = lib.types.listOf lib.types.str;
-          default = [ ];
-          example = [ "nginx.service" ];
-          description = "Units reloaded (or restarted if no reload defined) when this template changes.";
-        };
-      };
     }
   );
 
-  # Render one template: substitute every placeholder its source references
-  # with the contents of the corresponding decrypted secret file, then move
-  # the result into place.
-  #
-  # Usage: render-one NAME SRC DEST MODE OWNER GROUP [PLACEHOLDER SECRET-PATH]...
-  #
-  # This is a separate process rather than inline shell so that `set -e` is
-  # scoped to a single template: bash ignores `set -e` inside anything on the
-  # left of `||`, subshells included, and setting it in the activation script
-  # itself would leak into every snippet that runs after ours.
-  renderOne = pkgs.writeShellScript "agenix-extras-render-one" ''
-    set -euo pipefail
-    PATH=${
-      lib.makeBinPath [
-        pkgs.coreutils
-        pkgs.replace-secret
-      ]
-    }
-
-    name=$1 src=$2 dest=$3 mode=$4 owner=$5 group=$6
-    shift 6
-
-    printf '[agenix-extras] rendering %s -> %s\n' "$name" "$dest"
-    dir=$(dirname "$dest")
-    mkdir -p "$dir"
-    tmp=$(mktemp -p "$dir" ".$(basename "$dest").XXXXXX")
-    trap 'rm -f "$tmp"' EXIT
-    cat "$src" > "$tmp"
-    while (( $# )); do
-      replace-secret "$1" "$2" "$tmp"
-      shift 2
-    done
-    chmod -- "$mode" "$tmp"
-    chown "$owner:$group" "$tmp"
-    # -T: fail if `dest` is a directory instead of moving the file into it.
-    mv -fT "$tmp" "$dest"
-    trap - EXIT
-  '';
+  renderOne = extras.mkRenderOne {
+    chown = true;
+  };
 
   renderTemplate =
     tpl:
     let
-      args = [
-        tpl.name
-        (templateSource tpl)
-        tpl.path
-        tpl.mode
-        tpl.owner
-        tpl.group
-      ]
-      ++ lib.concatMap (n: [
-        (placeholderFor n)
-        secrets.${n}.path
-      ]) (referencedSecrets tpl);
+      args =
+        lib.take 4 (renderArgs tpl)
+        ++ [
+          tpl.owner
+          tpl.group
+        ]
+        ++ lib.drop 4 (renderArgs tpl);
       render = ''
         ${renderOne} ${lib.escapeShellArgs args} || {
           printf '[agenix-extras] failed to render %s\n' ${lib.escapeShellArg tpl.name} >&2
@@ -243,16 +120,11 @@ let
       fi
     '';
 
-  # Every template's path. Resolved at runtime, these are the files in
-  # `renderedDir` that belong to a current template; anything else in there is
-  # left over from a removed or renamed template.
-  templatePaths = pkgs.writeText "agenix-extras-paths" (
-    lib.concatLines (lib.mapAttrsToList (_: t: t.path) templates)
-  );
-
   # Render every template, carrying on past failures so one broken template
   # doesn't keep the others from being updated. Exits non-zero if any failed.
   renderAll = pkgs.writeShellScript "agenix-extras-render" ''
+    # agenix expands variables in its own paths, so the checks do too.
+    ${extras.captureEnvSnippet}
     PATH=${
       lib.makeBinPath [
         pkgs.coreutils
@@ -264,14 +136,8 @@ let
     failed=0
     mounted=0
 
-    # Where a template's file actually ends up: symlinks in the parent
-    # directories are followed, but not a symlink at the path itself, which
-    # the renderer replaces rather than writes through.
-    resolve() {
-      local parent
-      parent=$(realpath -m -- "$(dirname -- "$1")") || return 1
-      printf '%s/%s\n' "''${parent%/}" "$(basename -- "$1")"
-    }
+    ${extras.expandFunction}
+    ${extras.resolveFunction}
 
     # The default directory, canonical so the checks below compare like with
     # like even if it is a symlink (and so `find` lists its contents), and its
@@ -281,6 +147,13 @@ let
       printf '[agenix-extras] cannot resolve %s\n' ${lib.escapeShellArg renderedDir} >&2
       exit 1
     }
+
+    ${extras.resolveTemplatesSnippet {
+      inherit templatePaths;
+      inherit agenixDirs secretPaths renderedDir;
+      expandPaths = false;
+      expandAgenixPaths = true;
+    }}
 
     # If the ramfs can't be mounted, templates at other paths are still
     # rendered; the ones in the default directory are skipped.
@@ -295,42 +168,14 @@ let
       fi
     ''}
 
-    # Prune before rendering, so a stale file or directory can't be in the way
-    # when a template's path turns into a directory or vice versa.
     if mountpoint -q "$dir"; then
-      expected=$(while IFS= read -r p; do resolve "$p"; done < ${templatePaths})
-      while IFS= read -r -d "" f; do
-        if ! grep -Fxq -- "$f" <<< "$expected"; then
-          printf '[agenix-extras] removing stale %s\n' "$f"
-          rm -f -- "$f"
-        fi
-      done < <(find "$dir" -mindepth 1 ! -type d -print0)
-      find "$dir" -mindepth 1 -depth -type d -empty -delete
+      ${extras.pruneSnippet}
     fi
 
     ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}
 
     exit $failed
   '';
-
-  # For every unit named in a `restartUnits` / `reloadUnits` option, the store
-  # paths whose change should restart / reload it.
-  unitTriggers =
-    field:
-    lib.zipAttrsWith (_: vs: lib.unique (lib.concatLists vs)) (
-      lib.concatMap (s: map (u: { ${u} = [ (toStorePath s.file) ]; }) s.${field}) (lib.attrValues secrets)
-      ++ lib.concatMap (t: map (u: { ${u} = templateTriggers t; }) t.${field}) (lib.attrValues templates)
-    );
-  restartTriggers = unitTriggers "restartUnits";
-  reloadTriggers = unitTriggers "reloadUnits";
-  triggeredUnits = lib.unique (lib.attrNames restartTriggers ++ lib.attrNames reloadTriggers);
-
-  # `foo.service`, `foo@bar.service`, `foo@.service`, ...
-  isUnitName =
-    u:
-    builtins.match "[^/]+\\.(service|socket|device|mount|automount|swap|target|path|timer|slice|scope)" u
-    != null;
-  isInstanceName = u: builtins.match "[^/]*@[^/]+\\.[a-z]+" u != null;
 
   # Whether the NixOS config itself defines the unit (as opposed to it only
   # getting our drop-in). `systemd.units` covers both raw units and those
@@ -350,21 +195,20 @@ let
   triggerDropIns = pkgs.linkFarm "agenix-extras-unit-triggers" (
     map (u: {
       name = "etc/systemd/system/${u}.d/agenix-extras.conf";
-      path = pkgs.writeText "agenix-extras-${lib.strings.sanitizeDerivationName u}.conf" ''
-        [Unit]
-        ${lib.optionalString (restartTriggers ? ${u}) "X-Restart-Triggers=${toString restartTriggers.${u}}"}
-        ${lib.optionalString (reloadTriggers ? ${u}) "X-Reload-Triggers=${toString reloadTriggers.${u}}"}
-        ${lib.optionalString (isInstanceName u && !definedByNixOS u) ''
-          # switch-to-configuration stops an instance once its last drop-in
-          # is removed. Ours doesn't make the instance NixOS-managed, so
-          # dropping the unit from restartUnits/reloadUnits must not stop it.
-          # (Instances NixOS defines keep the default, so removing them still
-          # stops them. Removing the template while this instance is still
-          # listed leaves it running.)
-          X-StopOnRemoval=false
-        ''}
-      '';
-    }) (lib.filter isUnitName triggeredUnits)
+      path = pkgs.writeText "agenix-extras-${lib.strings.sanitizeDerivationName u}.conf" (
+        dropInText u (
+          lib.optionalString (extras.isInstanceName u && !definedByNixOS u) ''
+            # switch-to-configuration stops an instance once its last drop-in
+            # is removed. Ours doesn't make the instance NixOS-managed, so
+            # dropping the unit from restartUnits/reloadUnits must not stop it.
+            # (Instances NixOS defines keep the default, so removing them still
+            # stops them. Removing the template while this instance is still
+            # listed leaves it running.)
+            X-StopOnRemoval=false
+          ''
+        )
+      );
+    }) (lib.filter extras.isUnitName triggeredUnits)
   );
 
 in
@@ -377,35 +221,16 @@ in
       description = "Templates rendered with secret values substituted at activation time.";
     };
 
-    placeholder = lib.mkOption {
-      type = lib.types.attrsOf lib.types.str;
-      readOnly = true;
-      description = ''
-        One placeholder string per secret in {option}`age.secrets`, for use in
-        {option}`age.templates.<name>.content` (or a template `file`). Each one is
-        replaced with the secret's decrypted contents when the template is
-        rendered, with leading and trailing newlines stripped. The placeholders
-        themselves contain no secret material, so they are safe in the Nix
-        store.
-      '';
-    };
+    placeholder = extras.placeholderOption;
 
     secrets = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule {
-          options = {
-            restartUnits = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              example = [ "nginx.service" ];
-              description = "Units restarted by switch-to-configuration when this secret's `.age` file changes.";
-            };
-            reloadUnits = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              example = [ "nginx.service" ];
-              description = "Units reloaded (or restarted) when this secret's `.age` file changes.";
-            };
+          options = extras.unitListOptions {
+            units = "Units";
+            switch = "switch-to-configuration";
+            example = [ "nginx.service" ];
+            changes = "this secret's `.age` file";
           };
         }
       );
@@ -413,46 +238,12 @@ in
   };
 
   config = {
-    age.placeholder = lib.mapAttrs (name: _: placeholderFor name) secrets;
+    age.placeholder = lib.mapAttrs (name: _: extras.placeholderFor name) secrets;
 
-    assertions =
-      lib.mapAttrsToList (name: t: {
-        assertion = (t.file == null) != (t.content == null);
-        message = "age.templates.${name}: set exactly one of `file` and `content`.";
-      }) templates
-      # Normalised, so the duplicate-path check below, which compares paths
-      # verbatim, also catches e.g. `/run/agenix-extras/./x` vs `.../x`.
-      ++ lib.mapAttrsToList (name: t: {
-        assertion =
-          lib.hasPrefix "/" t.path
-          && builtins.match ".*(//|/\\./|/\\.\\./).*|.*/(\\.|\\.\\.)?" t.path == null;
-        message = "age.templates.${name}.path must be an absolute path without `.`, `..` or empty components; got: ${t.path}";
-      }) templates
-      ++ lib.mapAttrsToList (name: t: {
-        assertion = t.path != renderedDir;
-        message = "age.templates.${name}.path is the directory templates are rendered into; use a file in it, e.g. ${renderedDir}/${name}.";
-      }) templates
-      ++ lib.mapAttrsToList (path: names: {
-        assertion = lib.length names == 1;
-        message = "age.templates: ${lib.concatStringsSep ", " names} all render to ${path}.";
-      }) (lib.groupBy' (names: n: names ++ [ n ]) [ ] (n: templates.${n}.path) (lib.attrNames templates))
-      ++ lib.concatLists (
-        lib.mapAttrsToList (
-          name: t:
-          map (n: {
-            assertion = (cfg.enable or true) && (secrets.${n}.enable or true);
-            # Name the secret's own flag first: agenix's `age.enable` defaults
-            # to "any secret enabled", so it is a consequence, not the cause.
-            message = "age.templates.${name} uses age.secrets.${n}, which is not decrypted because ${
-              if !(secrets.${n}.enable or true) then "age.secrets.${n}.enable" else "age.enable"
-            } is false.";
-          }) (referencedSecrets t)
-        ) templates
-      )
-      ++ map (u: {
-        assertion = isUnitName u;
-        message = "agenix-extras: `${u}` in restartUnits/reloadUnits is not a systemd unit name (expected e.g. `${u}.service`).";
-      }) triggeredUnits;
+    assertions = assertions {
+      isAbsolute = lib.hasPrefix "/";
+      inherit renderedDir;
+    };
 
     # Runs even without templates so that removing the last one still prunes
     # its rendered file.

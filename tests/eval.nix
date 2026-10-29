@@ -81,6 +81,54 @@ let
       ];
     };
 
+    agenix-secrets-dir = {
+      module.age.templates.t = {
+        content = "x";
+        path = "/run/agenix";
+      };
+      expect = [
+        "age.templates.t.path is age.secretsDir or age.secretsMountPoint, or inside one, which agenix replaces on every run; got: /run/agenix"
+      ];
+    };
+
+    inside-agenix-secrets-dir = {
+      module.age.templates.t = {
+        content = "x";
+        path = "/run/agenix/t";
+      };
+      expect = [
+        "age.templates.t.path is age.secretsDir or age.secretsMountPoint, or inside one, which agenix replaces on every run; got: /run/agenix/t"
+      ];
+    };
+
+    template-at-secret-path = {
+      module = {
+        age.secrets.token.path = "/var/lib/app/token";
+        age.templates.t = {
+          content = "x";
+          path = "/var/lib/app/token";
+        };
+      };
+      expect = [ "age.templates.t.path is where agenix puts a secret; got: /var/lib/app/token" ];
+    };
+
+    secret-in-rendered-dir = {
+      module.age.secrets.token.path = "/run/agenix-extras/token";
+      expect = [
+        "agenix-extras: age.secrets.token.path is inside /run/agenix-extras, where everything that isn't a template is removed; got: /run/agenix-extras/token"
+      ];
+    };
+
+    agenix-generation-dir = {
+      module.age.templates.t = {
+        content = "x";
+        path = "/run/agenix.d/1/t";
+      };
+      expect = [
+        "age.templates.t.path is age.secretsDir or age.secretsMountPoint, or inside one, which agenix replaces on every run; got: /run/agenix.d/1/t"
+      ];
+    };
+
     mount-root-as-path = {
       module.age.templates.t = {
         content = "x";

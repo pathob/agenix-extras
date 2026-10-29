@@ -9,6 +9,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
+    # Only for the home-manager module's tests; the module itself works with
+    # whichever home-manager it is imported into.
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+
     systems.url = "github:nix-systems/default";
   };
 
@@ -17,6 +24,7 @@
       self,
       nixpkgs,
       agenix,
+      home-manager,
       systems,
     }:
 
@@ -34,6 +42,15 @@
 
       nixosModules.default = self.nixosModules.agenix-extras;
 
+      homeManagerModules.agenix-extras = {
+        imports = [
+          agenix.homeManagerModules.default
+          ./modules/agenix-extras-home.nix
+        ];
+      };
+
+      homeManagerModules.default = self.homeManagerModules.agenix-extras;
+
       formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
 
       checks = eachSystem (
@@ -49,6 +66,7 @@
             find . -name '*.nix' -exec nixfmt --check {} +
             touch $out
           '';
+          shell = import ./tests/shell.nix { inherit pkgs; };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           # Evaluates the example configuration (the README points people at
@@ -56,8 +74,11 @@
           example =
             let
               example = nixpkgs.lib.nixosSystem {
+                # As in example/flake.nix.
                 modules = [
                   self.nixosModules.default
+                  home-manager.nixosModules.home-manager
+                  { home-manager.sharedModules = [ self.homeManagerModules.default ]; }
                   ./example/configuration.nix
                   { nixpkgs.hostPlatform = system; }
                 ];
@@ -68,6 +89,8 @@
             );
 
           eval = import ./tests/eval.nix { inherit pkgs self; };
+          eval-home = import ./tests/eval-home.nix { inherit pkgs self home-manager; };
+          home-manager = import ./tests/home-manager.nix { inherit pkgs self home-manager; };
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
           sysusers = import ./tests/sysusers.nix { inherit pkgs self; };
