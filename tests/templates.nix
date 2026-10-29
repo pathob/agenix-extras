@@ -3,7 +3,7 @@
 # in sync ensures the README's example actually works.
 {
   pkgs,
-  self
+  self,
 }:
 
 pkgs.testers.runNixOSTest {

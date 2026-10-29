@@ -23,7 +23,9 @@ let
   templateTriggers =
     tpl:
     [ (templateSource tpl) ]
-    ++ map secretTrigger (lib.filter (n: lib.hasInfix (placeholderFor n) (templateText tpl)) (lib.attrNames secrets));
+    ++ map secretTrigger (
+      lib.filter (n: lib.hasInfix (placeholderFor n) (templateText tpl)) (lib.attrNames secrets)
+    );
 
   # Plain text of a template, for placeholder discovery at eval time.
   templateText = tpl: if tpl.file != null then builtins.readFile tpl.file else tpl.content;
@@ -182,10 +184,18 @@ let
     let
       entries =
         lib.concatMap (
-          s: map (u: { inherit u; triggers = [ s.file ]; }) (s.${field} or [ ])
+          s:
+          map (u: {
+            inherit u;
+            triggers = [ s.file ];
+          }) (s.${field} or [ ])
         ) (lib.attrValues secrets)
         ++ lib.concatMap (
-          t: map (u: { inherit u; triggers = templateTriggers t; }) t.${field}
+          t:
+          map (u: {
+            inherit u;
+            triggers = templateTriggers t;
+          }) t.${field}
         ) (lib.attrValues templates);
 
       grouped = lib.foldl' (
@@ -212,10 +222,7 @@ let
     in
     lib.mapAttrs (
       _: kindAttrs:
-      lib.mapAttrs (
-        _: unit:
-        unit // { ${triggersField} = lib.unique unit.${triggersField}; }
-      ) kindAttrs
+      lib.mapAttrs (_: unit: unit // { ${triggersField} = lib.unique unit.${triggersField}; }) kindAttrs
     ) grouped;
 in
 

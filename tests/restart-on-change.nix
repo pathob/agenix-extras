@@ -1,7 +1,7 @@
 # Tests that restartUnits fires when a secret's plaintext changes between activations.
 {
   pkgs,
-  self
+  self,
 }:
 
 pkgs.testers.runNixOSTest {

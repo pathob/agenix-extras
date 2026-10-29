@@ -34,7 +34,7 @@
 
       nixosModules.default = self.nixosModules.agenix-extras;
 
-      formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-rfc-style);
+      formatter = eachSystem (system: nixpkgs.legacyPackages.${system}.nixfmt-tree);
 
       checks = eachSystem (
         system:
@@ -43,7 +43,14 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
 
-        nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
+        {
+          formatting = pkgs.runCommand "agenix-extras-formatting" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+            cd ${self}
+            find . -name '*.nix' -exec nixfmt --check {} +
+            touch $out
+          '';
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           templates = import ./tests/templates.nix { inherit pkgs self; };
           restart-on-change = import ./tests/restart-on-change.nix { inherit pkgs self; };
         }
