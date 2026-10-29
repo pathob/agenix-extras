@@ -81,6 +81,16 @@ let
       ];
     };
 
+    mount-root-as-path = {
+      module.age.templates.t = {
+        content = "x";
+        path = "/run/agenix-extras";
+      };
+      expect = [
+        "age.templates.t.path is the directory templates are rendered into; use a file in it, e.g. /run/agenix-extras/t."
+      ];
+    };
+
     non-normalised-path = {
       module.age.templates.t = {
         content = "x";
