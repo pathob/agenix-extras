@@ -28,7 +28,12 @@ let
   # identity, and the identity is fixed per host so the ciphertext is what
   # changes). For templates it's the source file plus every referenced secret's
   # `.age`, because a template's output depends on both.
-  secretTrigger = name: secrets.${name}.file;
+  secretTrigger = name: toStorePath secrets.${name}.file;
+
+  # Copy a Nix path into the store, as NixOS's own restartTriggers do. Plain
+  # `toString` keeps a path outside the store (e.g. `/etc/nixos/x.age` in a
+  # non-flake config) as-is, so editing the file wouldn't change the trigger.
+  toStorePath = x: if lib.isPath x then "${x}" else x;
   templateTriggers = tpl: [ (templateSource tpl) ] ++ map secretTrigger (referencedSecrets tpl);
 
   # Plain text of a template, for placeholder discovery at eval time.
@@ -45,7 +50,7 @@ let
   templateSource =
     tpl:
     if tpl.file != null then
-      tpl.file
+      toStorePath tpl.file
     else
       pkgs.writeText "agenix-template-${lib.strings.sanitizeDerivationName tpl.name}" tpl.content;
 
@@ -246,92 +251,60 @@ let
     exit $failed
   '';
 
-  # Invert: for each named unit, collect every store path that should trigger
-  # it (the secret's `.age` ciphertext, or for a template its source + every
-  # secret it references). We then plant those into the unit's standard
-  # `restartTriggers` / `reloadTriggers`, which switch-to-configuration
-  # honours at eval time — no runtime hash tracking needed.
-  unitKind =
-    unit:
-    let
-      parts = lib.splitString "." unit;
-    in
-    if lib.length parts < 2 then null else lib.last parts;
+  # For every unit named in a `restartUnits` / `reloadUnits` option, the store
+  # paths whose change should restart / reload it.
+  unitTriggers =
+    field:
+    lib.zipAttrsWith (_: vs: lib.unique (lib.concatLists vs)) (
+      lib.concatMap (s: map (u: { ${u} = [ (toStorePath s.file) ]; }) s.${field}) (lib.attrValues secrets)
+      ++ lib.concatMap (t: map (u: { ${u} = templateTriggers t; }) t.${field}) (lib.attrValues templates)
+    );
+  restartTriggers = unitTriggers "restartUnits";
+  reloadTriggers = unitTriggers "reloadUnits";
+  triggeredUnits = lib.unique (lib.attrNames restartTriggers ++ lib.attrNames reloadTriggers);
 
-  unitName =
-    unit:
-    let
-      parts = lib.splitString "." unit;
-    in
-    lib.concatStringsSep "." (lib.init parts);
+  # `foo.service`, `foo@bar.service`, `foo@.service`, ...
+  isUnitName =
+    u:
+    builtins.match "[^/]+\\.(service|socket|device|mount|automount|swap|target|path|timer|slice|scope)" u
+    != null;
+  isInstanceName = u: builtins.match "[^/]*@[^/]+\\.[a-z]+" u != null;
 
-  kindToAttr = {
-    service = "services";
-    socket = "sockets";
-    timer = "timers";
-    path = "paths";
-    target = "targets";
-    mount = "mounts";
-    automount = "automounts";
-    slice = "slices";
-  };
+  # Whether the NixOS config itself defines the unit (as opposed to it only
+  # getting our drop-in). `systemd.units` covers both raw units and those
+  # generated from `systemd.services` etc. Safe to evaluate here: the drop-ins
+  # go through `systemd.packages`, which `systemd.units` doesn't depend on.
+  definedByNixOS = u: config.systemd.units ? ${u};
 
-  # `null` or an absent kind returns null. Guards against the fact that
-  # `attrs.${null}` throws at the interpolation step, before `or` can save us.
-  unitSubtree =
-    unit:
-    let
-      kind = unitKind unit;
-    in
-    if kind == null then null else kindToAttr.${kind} or null;
+  # The triggers are attached as a drop-in, `<unit>.d/agenix-extras.conf`,
+  # rather than through `systemd.services.<name>.restartTriggers`. Defining
+  # `systemd.services.<name>` for a unit that neither NixOS nor a package
+  # defines generates a stub unit file with no ExecStart. For a template
+  # instance (`foo@bar.service`) that stub shadows the template and the
+  # instance can no longer be started. A drop-in only adds keys to whatever
+  # unit exists, whether it comes from NixOS, a package or a template, and
+  # switch-to-configuration reads drop-ins when deciding what to restart or
+  # reload.
+  triggerDropIns = pkgs.linkFarm "agenix-extras-unit-triggers" (
+    map (u: {
+      name = "etc/systemd/system/${u}.d/agenix-extras.conf";
+      path = pkgs.writeText "agenix-extras-${lib.strings.sanitizeDerivationName u}.conf" ''
+        [Unit]
+        ${lib.optionalString (restartTriggers ? ${u}) "X-Restart-Triggers=${toString restartTriggers.${u}}"}
+        ${lib.optionalString (reloadTriggers ? ${u}) "X-Reload-Triggers=${toString reloadTriggers.${u}}"}
+        ${lib.optionalString (isInstanceName u && !definedByNixOS u) ''
+          # switch-to-configuration stops an instance once its last drop-in
+          # is removed. Ours doesn't make the instance NixOS-managed, so
+          # dropping the unit from restartUnits/reloadUnits must not stop it.
+          # (Instances NixOS defines keep the default, so removing them still
+          # stops them. Removing the template while this instance is still
+          # listed leaves it running.)
+          X-StopOnRemoval=false
+        ''}
+      '';
+    }) (lib.filter isUnitName triggeredUnits)
+  );
 
-  # Build `{ services.<n>.restartTriggers = [...]; sockets.<n>... }`.
-  # We accumulate manually because `recursiveUpdate` overwrites list values.
-  triggersFor =
-    field: triggersField:
-    let
-      entries =
-        lib.concatMap (
-          s:
-          map (u: {
-            inherit u;
-            triggers = [ s.file ];
-          }) (s.${field} or [ ])
-        ) (lib.attrValues secrets)
-        ++ lib.concatMap (
-          t:
-          map (u: {
-            inherit u;
-            triggers = templateTriggers t;
-          }) t.${field}
-        ) (lib.attrValues templates);
-
-      grouped = lib.foldl' (
-        acc: e:
-        let
-          subtree = unitSubtree e.u;
-        in
-        if subtree == null then
-          acc
-        else
-          let
-            n = unitName e.u;
-            existing = acc.${subtree}.${n}.${triggersField} or [ ];
-          in
-          acc
-          // {
-            ${subtree} = (acc.${subtree} or { }) // {
-              ${n} = (acc.${subtree}.${n} or { }) // {
-                ${triggersField} = existing ++ e.triggers;
-              };
-            };
-          }
-      ) { } entries;
-    in
-    lib.mapAttrs (
-      _: kindAttrs:
-      lib.mapAttrs (_: unit: unit // { ${triggersField} = lib.unique unit.${triggersField}; }) kindAttrs
-    ) grouped;
 in
 
 {
@@ -409,7 +382,11 @@ in
             } is false.";
           }) (referencedSecrets t)
         ) templates
-      );
+      )
+      ++ map (u: {
+        assertion = isUnitName u;
+        message = "agenix-extras: `${u}` in restartUnits/reloadUnits is not a systemd unit name (expected e.g. `${u}.service`).";
+      }) triggeredUnits;
 
     # Runs even without templates so that removing the last one still prunes
     # its rendered file.
@@ -427,8 +404,7 @@ in
     };
 
     systemd = lib.mkMerge [
-      (triggersFor "restartUnits" "restartTriggers")
-      (triggersFor "reloadUnits" "reloadTriggers")
+      { packages = lib.optional (triggeredUnits != [ ]) triggerDropIns; }
 
       # Under systemd-sysusers/userborn agenix decrypts from systemd units in
       # sysinit.target instead of activation scripts, and users only exist
@@ -478,19 +454,5 @@ in
         );
       })
     ];
-
-    warnings =
-      let
-        bad = lib.filter (u: unitSubtree u == null) (
-          lib.unique (
-            lib.concatMap (s: (s.restartUnits or [ ]) ++ (s.reloadUnits or [ ])) (lib.attrValues secrets)
-            ++ lib.concatMap (t: t.restartUnits ++ t.reloadUnits) (lib.attrValues templates)
-          )
-        );
-      in
-      lib.optional (bad != [ ]) (
-        "agenix-extras: ignored restart/reload entries with unrecognized unit type: "
-        + lib.concatStringsSep ", " bad
-      );
   };
 }

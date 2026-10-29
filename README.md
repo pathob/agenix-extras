@@ -108,20 +108,27 @@ Both `age.secrets.<name>` and `age.templates.<name>` accept:
 - `restartUnits` - units restarted by `switch-to-configuration`.
 - `reloadUnits`  - units reloaded (or restarted if no reload is defined).
 
-For each listed unit, agenix-extras adds the relevant store paths to the
-unit's `restartTriggers` / `reloadTriggers` at eval time. For a secret that's
-the `.age` file; for a template it's the template source plus every secret's
+For each listed unit, agenix-extras writes the relevant store paths into a
+drop-in, `/etc/systemd/system/<unit>.d/agenix-extras.conf`, as
+`X-Restart-Triggers` / `X-Reload-Triggers`. These are the same keys NixOS's
+own `restartTriggers` / `reloadTriggers` produce. For a secret that's the
+`.age` file; for a template it's the template source plus every secret's
 `.age` the template references. When any of those change between system
 generations, `switch-to-configuration` restarts or reloads the unit as part
 of `nixos-rebuild switch` - the same machinery nixpkgs services use for
 config-file changes. No activation-time state file, no hash bookkeeping.
 
+Because it is a drop-in, it works for any unit: one defined in NixOS, one
+that only comes from a package in `systemd.packages`, or a template instance
+such as `getty@tty1.service` (only that instance is restarted). Units with
+`restartIfChanged = false` are not restarted.
+
 One consequence: rekeying an `.age` file (re-encrypting to a new recipient
 list, plaintext unchanged) is treated as a change because the ciphertext
 hash differs. Affected units will restart on the next switch.
 
-Supported unit kinds: `service`, `socket`, `timer`, `path`, `target`,
-`mount`, `automount`, `slice`. Other suffixes are ignored with a warning.
+Entries must be full unit names with a type suffix (`nginx.service`, not
+`nginx`); anything else fails evaluation.
 
 ## Tests
 
@@ -135,10 +142,13 @@ Three NixOS VM tests live under [`tests/`](./tests):
   template rendered, and the failed one kept its previous content. Switching
   back checks that the orphaned file is removed. The same module is what the
   example flake imports, so the example is the test fixture.
-- **`restart-on-change`** - boots a VM with a long-running `demo.service` and a
-  secret that has `restartUnits = [ "demo.service" ]`. Switches to a
+- **`restart-on-change`** - boots a VM with a secret whose `restartUnits` lists
+  a NixOS-defined `demo.service`, a `pkgdemo.service` that only comes from
+  `systemd.packages`, and the template instance `inst@a.service`. Switches to a
   specialisation whose `.age` file decrypts to different plaintext and asserts
-  the service got a new PID.
+  all three got a new PID while the unlisted `inst@b.service` did not. Then
+  switches to one without `restartUnits` and checks that everything is still
+  running.
 - **`sysusers`** - same template checks with `services.userborn.enable`, where
   rendering happens in `agenix-extras.service`. The template is owned by a user
   that only exists once userborn has run, and switching to a changed secret
