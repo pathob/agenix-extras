@@ -20,15 +20,18 @@ let
   # changes). For templates it's the source file plus every referenced secret's
   # `.age`, because a template's output depends on both.
   secretTrigger = name: secrets.${name}.file;
-  templateTriggers =
-    tpl:
-    [ (templateSource tpl) ]
-    ++ map secretTrigger (
-      lib.filter (n: lib.hasInfix (placeholderFor n) (templateText tpl)) (lib.attrNames secrets)
-    );
+  templateTriggers = tpl: [ (templateSource tpl) ] ++ map secretTrigger (referencedSecrets tpl);
 
   # Plain text of a template, for placeholder discovery at eval time.
   templateText = tpl: if tpl.file != null then builtins.readFile tpl.file else tpl.content;
+
+  # Names of the secrets whose placeholder appears in the template.
+  referencedSecrets =
+    tpl:
+    let
+      text = templateText tpl;
+    in
+    lib.filter (n: lib.hasInfix (placeholderFor n) text) (lib.attrNames secrets);
 
   templateSource =
     tpl:
@@ -111,32 +114,74 @@ let
 
   # Render one template: substitute every placeholder its source references
   # with the contents of the corresponding decrypted secret file, then move
-  # the result into place. User-controlled values are shell-escaped.
+  # the result into place.
+  #
+  # Usage: render-one NAME SRC DEST MODE OWNER GROUP [PLACEHOLDER SECRET-PATH]...
+  #
+  # This is a separate process rather than inline shell so that `set -e` is
+  # scoped to a single template: bash ignores `set -e` inside anything on the
+  # left of `||`, subshells included, and setting it in the activation script
+  # itself would leak into every snippet that runs after ours.
+  renderOne = pkgs.writeShellScript "agenix-extras-render-one" ''
+    set -euo pipefail
+    PATH=${
+      lib.makeBinPath [
+        pkgs.coreutils
+        pkgs.replace-secret
+      ]
+    }
+
+    name=$1 src=$2 dest=$3 mode=$4 owner=$5 group=$6
+    shift 6
+
+    printf '[agenix-extras] rendering %s -> %s\n' "$name" "$dest"
+    dir=$(dirname "$dest")
+    mkdir -p "$dir"
+    tmp=$(mktemp -p "$dir" ".$(basename "$dest").XXXXXX")
+    trap 'rm -f "$tmp"' EXIT
+    cat "$src" > "$tmp"
+    while (( $# )); do
+      replace-secret "$1" "$2" "$tmp"
+      shift 2
+    done
+    chmod "$mode" "$tmp"
+    chown "$owner:$group" "$tmp"
+    mv -f "$tmp" "$dest"
+    trap - EXIT
+  '';
+
   renderTemplate =
     tpl:
     let
-      referenced = lib.filter (n: lib.hasInfix (placeholderFor n) (templateText tpl)) (
-        lib.attrNames secrets
-      );
-      tplPath = lib.escapeShellArg tpl.path;
-      tplPathTmp = lib.escapeShellArg "${tpl.path}.tmp";
-      src = lib.escapeShellArg (templateSource tpl);
+      args = [
+        tpl.name
+        (templateSource tpl)
+        tpl.path
+        tpl.mode
+        tpl.owner
+        tpl.group
+      ]
+      ++ lib.concatMap (n: [
+        (placeholderFor n)
+        secrets.${n}.path
+      ]) (referencedSecrets tpl);
     in
     ''
-      printf '[agenix-extras] rendering %s -> %s\n' ${lib.escapeShellArg tpl.name} ${tplPath}
-      mkdir -p "$(dirname ${tplPath})"
-      install -m 0600 -o root -g root /dev/null ${tplPathTmp}
-      cat ${src} > ${tplPathTmp}
-      ${lib.concatMapStringsSep "\n" (n: ''
-        ${pkgs.replace-secret}/bin/replace-secret \
-          ${lib.escapeShellArg (placeholderFor n)} \
-          ${lib.escapeShellArg secrets.${n}.path} \
-          ${tplPathTmp}
-      '') referenced}
-      chmod ${lib.escapeShellArg tpl.mode} ${tplPathTmp}
-      chown ${lib.escapeShellArg tpl.owner}:${lib.escapeShellArg tpl.group} ${tplPathTmp}
-      mv -f ${tplPathTmp} ${tplPath}
+      ${renderOne} ${lib.escapeShellArgs args} || {
+        printf '[agenix-extras] failed to render %s\n' ${lib.escapeShellArg tpl.name} >&2
+        failed=1
+      }
     '';
+
+  # Render every template, carrying on past failures so one broken template
+  # doesn't keep the others from being updated. Exits non-zero if any failed.
+  renderAll = pkgs.writeShellScript "agenix-extras-render" ''
+    PATH=${lib.makeBinPath [ pkgs.coreutils ]}
+    failed=0
+    install -d -m 0751 -o root -g root ${lib.escapeShellArg defaultRenderedDir}
+    ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}
+    exit $failed
+  '';
 
   # Invert: for each named unit, collect every store path that should trigger
   # it (the secret's `.age` ciphertext, or for a template its source + every
@@ -289,11 +334,10 @@ in
       ];
 
     system.activationScripts.agenix-extras = lib.mkIf (templates != { }) {
-      text = ''
-        set -euo pipefail
-        install -d -m 0751 -o root -g root ${lib.escapeShellArg defaultRenderedDir}
-        ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}
-      '';
+      # A failure here is recorded by the activation script's ERR trap
+      # (marking this snippet and the switch as failed) without stopping the
+      # snippets that run after it.
+      text = "${renderAll}";
       deps = [ "agenix" ];
     };
 
