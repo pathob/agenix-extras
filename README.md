@@ -181,8 +181,9 @@ Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
 compares the module's assertion messages.
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
-evaluates every check, builds the cheap ones, and then runs each VM test as
-its own job on `ubuntu-latest` (which has nested KVM). The list of VM tests
+evaluates every check, builds the cheap ones, evaluates the
+[`example/`](./example) flake itself, and then runs each VM test as its own
+job on `ubuntu-latest` (which has nested KVM). The list of VM tests
 comes from the flake, so a new test only needs adding to `checks`. A weekly
 workflow opens a PR that updates `flake.lock`.
 

@@ -47,6 +47,15 @@ jobs:
           jq -r '.[] | ".#checks.x86_64-linux." + .' <<< '${{ steps.checks.outputs.other }}' \
             | xargs nix build --print-build-logs
 
+      # The README points people at example/ as a flake, with its `path:..`
+      # input. It has no lock of its own, so pin its nixpkgs to ours.
+      - name: Evaluate the example flake
+        run: |
+          rev=$(jq -r .nodes.nixpkgs.locked.rev flake.lock)
+          nix eval --no-write-lock-file --raw \
+            --override-input nixpkgs "github:NixOS/nixpkgs/$rev" \
+            ./example#nixosConfigurations.demo.config.system.build.toplevel.drvPath
+
   vm-tests:
     needs: flake-check
     runs-on: ubuntu-latest
