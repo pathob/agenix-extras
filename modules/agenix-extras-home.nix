@@ -19,6 +19,8 @@ let
     templatePaths
     renderArgs
     assertions
+    agenixDirs
+    secretPaths
     ;
 
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
@@ -89,6 +91,13 @@ let
     fi
     dir=$(realpath -m -- "$dir") || exit 1
 
+    ${extras.resolveTemplatesSnippet {
+      inherit templatePaths;
+      inherit agenixDirs secretPaths renderedDir;
+      expandPaths = true;
+      expandAgenixPaths = true;
+    }}
+
     ${lib.optionalString (templates != { }) ''
       if (( ! pruneOnly )); then
         # Private to the user, like agenix's own directory.
@@ -97,10 +106,7 @@ let
     ''}
 
     if [[ -d $dir ]]; then
-      ${extras.pruneSnippet {
-        inherit templatePaths;
-        expandPaths = true;
-      }}
+      ${extras.pruneSnippet}
     fi
 
     # Like render-one, but expands the destination and the secret paths

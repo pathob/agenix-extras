@@ -17,6 +17,8 @@ let
     templatePaths
     renderArgs
     assertions
+    agenixDirs
+    secretPaths
     ;
 
   # Same detection agenix uses to decide between activation scripts and
@@ -121,6 +123,8 @@ let
   # Render every template, carrying on past failures so one broken template
   # doesn't keep the others from being updated. Exits non-zero if any failed.
   renderAll = pkgs.writeShellScript "agenix-extras-render" ''
+    # agenix expands variables in its own paths, so the checks do too.
+    ${extras.captureEnvSnippet}
     PATH=${
       lib.makeBinPath [
         pkgs.coreutils
@@ -132,6 +136,7 @@ let
     failed=0
     mounted=0
 
+    ${extras.expandFunction}
     ${extras.resolveFunction}
 
     # The default directory, canonical so the checks below compare like with
@@ -142,6 +147,13 @@ let
       printf '[agenix-extras] cannot resolve %s\n' ${lib.escapeShellArg renderedDir} >&2
       exit 1
     }
+
+    ${extras.resolveTemplatesSnippet {
+      inherit templatePaths;
+      inherit agenixDirs secretPaths renderedDir;
+      expandPaths = false;
+      expandAgenixPaths = true;
+    }}
 
     # If the ramfs can't be mounted, templates at other paths are still
     # rendered; the ones in the default directory are skipped.
@@ -157,10 +169,7 @@ let
     ''}
 
     if mountpoint -q "$dir"; then
-      ${extras.pruneSnippet {
-        inherit templatePaths;
-        expandPaths = false;
-      }}
+      ${extras.pruneSnippet}
     fi
 
     ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}

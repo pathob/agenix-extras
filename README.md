@@ -107,6 +107,17 @@ previous file stays in place, the other templates are still rendered, and the
 activation is reported as failed. Files in `/run/agenix-extras` that no longer
 belong to a template are removed.
 
+Paths are configuration and trusted as written, but variables and symlinks can
+make different spellings the same file. So before anything is rendered or
+removed, every template's destination and agenix's own paths are resolved, and
+nothing happens if two templates end up in one file, a template would land on
+one of agenix's directories or secrets, or one of those is inside the template
+directory. That directory is treated as agenix-extras' own: whatever in it
+isn't a template, symlinks included, is removed, and a path that goes through
+a symlink in it is refused. What the owner of a directory does to it
+afterwards (root on NixOS, the user under `${XDG_RUNTIME_DIR}`) is outside
+what these checks can defend against.
+
 Templates are rendered by an activation script that runs after agenix has
 decrypted and chowned its secrets. With `systemd.sysusers.enable` or
 `services.userborn.enable`, agenix decrypts from systemd units instead, so

@@ -66,6 +66,7 @@
             find . -name '*.nix' -exec nixfmt --check {} +
             touch $out
           '';
+          shell = import ./tests/shell.nix { inherit pkgs; };
         }
         // nixpkgs.lib.optionalAttrs (system == "x86_64-linux" || system == "aarch64-linux") {
           # Evaluates the example configuration (the README points people at

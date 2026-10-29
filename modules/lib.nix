@@ -359,18 +359,141 @@ rec {
     }
   '';
 
-  # Shell snippet removing files in "$dir" that no longer belong to a
-  # template, given every template's path (resolved with `resolve`, after
-  # `expand` if `expandPaths`). Runs before rendering, so a stale file or
-  # directory can't be in the way when a template's path turns into a
-  # directory or vice versa.
-  pruneSnippet =
-    { templatePaths, expandPaths }:
+  # Shell snippet setting `expected` to where every template's file ends up
+  # (`resolve`d, after `expand` if `expandPaths`), one per line, and
+  # `resolvedAll` to 0 if a template path couldn't be (so nothing is
+  # pruned). Expects "$dir", the canonical default directory; `renderedDir`
+  # is that directory as configured.
+  #
+  # What these checks defend, and what they don't: paths are configuration,
+  # trusted as written, but variables and symlinks make different spellings
+  # the same file, so every destination is resolved before anything happens.
+  # The default directory is ours: whatever in it isn't a template, symlinks
+  # included, is removed, so nothing may be reached through a symlink in it.
+  # agenix's directories and secrets are protected from our rendering and
+  # pruning. What the owner of a directory does to it afterwards (root on
+  # NixOS, the user under `${XDG_RUNTIME_DIR}`) is theirs to answer for.
+  #
+  # Stops the script before anything is mounted, rendered or removed if a
+  # template destination
+  #
+  # - is relative (after expansion) or "$dir" itself;
+  # - is shared with another template, e.g. through a variable or a symlink;
+  # - goes through a symlink in "$dir" (however "$dir" itself is reached),
+  #   which pruning would remove;
+  #
+  # or for agenix's own directories (`agenixDirs`, replaced on every run) and
+  # where it puts the enabled secrets (`secretPaths`), expanded like agenix
+  # does if `expandAgenixPaths`, if
+  #
+  # - one can't be interpreted (only `${VAR}` and `$VAR` are understood;
+  #   agenix's shell would also run `$(...)` and backticks);
+  # - a template would replace one, a symlink on the way to one, or end up
+  #   inside one of agenix's directories;
+  # - one is "$dir" or inside it, really, as configured or through a symlink
+  #   in "$dir", where the ramfs on NixOS would hide it and pruning remove
+  #   it.
+  resolveTemplatesSnippet =
+    {
+      templatePaths,
+      expandPaths,
+      expandAgenixPaths,
+      renderedDir,
+      agenixDirs,
+      secretPaths,
+    }:
+    let
+      expandVar = v: lib.optionalString expandPaths ''${v}=$(expand "''$${v}") &&'';
+    in
     ''
-      expected=$(while IFS= read -r p; do
-        ${lib.optionalString expandPaths ''p=$(expand "$p") || continue''}
-        resolve "$p"
-      done < ${templatePaths})
+      configuredDir=${lib.escapeShellArg renderedDir}
+      ${expandVar "configuredDir"} configuredDir=$(realpath -ms -- "$configuredDir") || exit 1
+
+      # throughSymlinkIn DIR PATH: whether PATH (lexical) goes through a
+      # symlink in DIR, wherever it enters DIR (an alias of it included).
+      throughSymlinkIn() {
+        local a=$2 e
+        while a=$(dirname -- "$a") && [[ $a != / ]]; do
+          e=$(resolve "$a") || continue
+          [[ $e == "$1"/* && -L $e ]] && return 0
+        done
+        return 1
+      }
+
+      expected="" resolvedAll=1
+      while IFS= read -r p; do
+        ${expandVar "p"} r=$(resolve "$p") || { resolvedAll=0; continue; }
+        # A variable may expand to a relative path.
+        if [[ $p != /* ]]; then
+          printf '[agenix-extras] %s is not an absolute path, not rendering anything\n' "$p" >&2
+          exit 1
+        fi
+        if [[ $r == "$dir" ]]; then
+          printf '[agenix-extras] %s is the template directory itself, not rendering anything\n' "$p" >&2
+          exit 1
+        fi
+        if throughSymlinkIn "$dir" "$(realpath -ms -- "$p")"; then
+          printf '[agenix-extras] %s goes through a symlink in %s, not rendering anything\n' "$p" "$dir" >&2
+          exit 1
+        fi
+        expected+="$r"$'\n'
+      done < ${templatePaths}
+      duplicates=$(sort <<< "$expected" | uniq -d | grep -v '^$' || true)
+      if [[ -n $duplicates ]]; then
+        printf '[agenix-extras] several templates render to %s, not rendering anything\n' "''${duplicates//$'\n'/, }" >&2
+        exit 1
+      fi
+
+      # checkProtected KIND PATH
+      checkProtected() {
+        local x=$2 entry canonical lexical a e p
+        ${lib.optionalString expandAgenixPaths ''x=$(expand "$x") || exit 1''}
+        if [[ $x == *'$'* || $x == *'`'* || $x != /* ]]; then
+          printf '[agenix-extras] cannot interpret %s %s, not rendering anything\n' "$1" "$2" >&2
+          exit 1
+        fi
+        # Its own entry (possibly a symlink), what it points to, and the path
+        # as configured.
+        entry=$(resolve "$x") && canonical=$(realpath -m -- "$x") && lexical=$(realpath -ms -- "$x") || exit 1
+        while IFS= read -r p; do
+          if [[ -n $p && ( $p == "$entry" || $p == "$canonical" || ( $1 == "agenix directory" && $p == "$canonical"/* ) ) ]]; then
+            printf '[agenix-extras] a template renders to %s, which is %s %s or inside it, not rendering anything\n' "$p" "$1" "$2" >&2
+            exit 1
+          fi
+        done <<< "$expected"
+        a=$lexical
+        while a=$(dirname -- "$a") && [[ $a != / ]]; do
+          e=$(resolve "$a") || continue
+          if grep -Fxq -- "$e" <<< "$expected"; then
+            printf '[agenix-extras] a template renders to %s, on the way to %s %s, not rendering anything\n' "$e" "$1" "$2" >&2
+            exit 1
+          fi
+        done
+        if [[ $entry == "$dir" || $entry == "$dir"/* || $canonical == "$dir" || $canonical == "$dir"/* || $lexical == "$configuredDir"/* ]] \
+          || throughSymlinkIn "$dir" "$lexical"; then
+          printf '[agenix-extras] %s %s is in %s, not rendering anything\n' "$1" "$2" "$configuredDir" >&2
+          exit 1
+        fi
+      }
+      for a in ${lib.escapeShellArgs agenixDirs}; do
+        checkProtected "agenix directory" "$a"
+      done
+      for s in ${lib.escapeShellArgs secretPaths}; do
+        checkProtected secret "$s"
+      done
+    '';
+
+  # Shell snippet removing files in "$dir" that no longer belong to a
+  # template, after `resolveTemplatesSnippet`. Runs before rendering, so a
+  # stale file or directory can't be in the way when a template's path turns
+  # into a directory or vice versa. If not every template path could be
+  # resolved, nothing is removed: the file of a template that fails to render
+  # must stay.
+  pruneSnippet = ''
+    if (( ! resolvedAll )); then
+      printf '[agenix-extras] not removing stale files, as not every template path could be resolved\n' >&2
+      failed=1
+    else
       while IFS= read -r -d "" f; do
         if ! grep -Fxq -- "$f" <<< "$expected"; then
           printf '[agenix-extras] removing stale %s\n' "$f"
@@ -378,7 +501,8 @@ rec {
         fi
       done < <(find "$dir" -mindepth 1 ! -type d -print0)
       find "$dir" -mindepth 1 -depth -type d -empty -delete
-    '';
+    fi
+  '';
 
   # Render one template: substitute every placeholder its source references
   # with the contents of the corresponding decrypted secret file, then move
