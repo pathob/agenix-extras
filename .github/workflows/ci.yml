@@ -4,42 +4,65 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Lets the flake.lock update workflow start CI on its pull request.
+  workflow_dispatch:
 
 jobs:
   flake-check:
     runs-on: ubuntu-latest
 
+    outputs:
+      vm-tests: ${{ steps.checks.outputs.vm-tests }}
+
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            accept-flake-config = true
 
-      - name: nix flake check (eval only)
-        run: nix flake check --no-build
+      # Instantiates every check without building it. Not `nix flake check
+      # --no-build`: that evaluates read-only, so files the templates test
+      # writes with builtins.toFile during evaluation can't be read back.
+      - name: Evaluate checks
+        run: |
+          nix eval --json .#checks.x86_64-linux \
+            --apply 'builtins.mapAttrs (_: c: c.drvPath)'
 
-      - name: Check formatting
-        run: nix build --print-build-logs .#checks.x86_64-linux.formatting
+      # NixOS VM tests (the checks with a `driver`) run in their own jobs
+      # below; everything else is cheap and built here.
+      - name: List checks
+        id: checks
+        run: |
+          list() {
+            nix eval --json .#checks.x86_64-linux \
+              --apply "cs: builtins.filter (n: $1 (cs.\${n} ? driver)) (builtins.attrNames cs)"
+          }
+          echo "vm-tests=$(list "")" >> "$GITHUB_OUTPUT"
+          echo "other=$(list "!")" >> "$GITHUB_OUTPUT"
+
+      - name: Build other checks
+        run: |
+          jq -r '.[] | ".#checks.x86_64-linux." + .' <<< '${{ steps.checks.outputs.other }}' \
+            | xargs nix build --print-build-logs
 
   vm-tests:
+    needs: flake-check
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        test: [templates, restart-on-change, sysusers]
+        test: ${{ fromJSON(needs.flake-check.outputs.vm-tests) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
-            accept-flake-config = true
 
       - name: Build and run ${{ matrix.test }}
         run: nix build --print-build-logs .#checks.x86_64-linux.${{ matrix.test }}

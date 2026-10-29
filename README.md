@@ -39,7 +39,7 @@ change detection at eval time with no runtime state.
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     agenix.url = "github:ryantm/agenix";
-    agenix-extras.url = "github:you/agenix-extras";
+    agenix-extras.url = "github:pathob/agenix-extras";
     agenix-extras.inputs.agenix.follows = "agenix";
     agenix-extras.inputs.nixpkgs.follows = "nixpkgs";
   };
@@ -82,6 +82,16 @@ Substitution is done with `replace-secret` from nixpkgs: the *template* (with
 opaque `<AGENIX:…:PLACEHOLDER>` markers, no plaintext) goes into the Nix store;
 the plaintext is read from `/run/agenix/<secret-name>` at activation time and
 written only to `/run/agenix-extras/<name>`.
+
+Leading and trailing newlines of a secret are stripped when it is substituted,
+so a secret file created with `echo` doesn't break a one-line value.
+
+Instead of `content`, a template can come from a `file`. It has to contain the
+placeholders, so it is usually generated. The file is read at evaluation time
+to find out which secrets it uses. Prefer `builtins.toFile`, which writes it
+during evaluation; a file built by a derivation such as `pkgs.writeText` needs
+import from derivation. Neither can be read in a read-only evaluation such as
+`nix flake check --no-build`, unless the file is already in the store.
 
 `/run/agenix-extras` is a ramfs, like agenix's own `/run/agenix.d`, so
 rendered plaintext is never swapped to disk. Each rendered file is replaced
@@ -163,9 +173,17 @@ nix build .#checks.x86_64-linux.restart-on-change
 nix build .#checks.x86_64-linux.sysusers
 ```
 
-GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
-two jobs: an eval-only `nix flake check --no-build`, and a matrix job that
-builds each VM test on `ubuntu-latest` (which has nested KVM).
+Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
+--check` over the tree), `example`, which evaluates
+[`example/configuration.nix`](./example/configuration.nix), and `eval`
+([`tests/eval.nix`](./tests/eval.nix)), which evaluates small configs and
+compares the module's assertion messages.
+
+GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
+evaluates every check, builds the cheap ones, and then runs each VM test as
+its own job on `ubuntu-latest` (which has nested KVM). The list of VM tests
+comes from the flake, so a new test only needs adding to `checks`. A weekly
+workflow opens a PR that updates `flake.lock`.
 
 The fixtures under `tests/keys/` and `tests/secrets/` are **test-only**: the
 private SSH key is checked in so the test can decrypt the pre-encrypted `.age`

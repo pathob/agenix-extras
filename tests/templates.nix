@@ -20,6 +20,32 @@ pkgs.testers.runNixOSTest {
 
       age.identityPaths = [ "/etc/ssh/ssh_host_ed25519_key" ];
 
+      users.users.reader = {
+        isSystemUser = true;
+        group = "reader";
+      };
+      users.groups.reader = { };
+
+      # A `file` template owned by a non-root user. The file has to be generated
+      # to contain the placeholders; `builtins.toFile` does that at evaluation
+      # time, whereas `pkgs.writeText` would need import from derivation.
+      age.templates."reader.conf" = {
+        file = builtins.toFile "reader.conf.tpl" ''
+          token = "${config.age.placeholder.api-token}"
+        '';
+        owner = "reader";
+        group = "reader";
+      };
+
+      # A template outside the default directory, with a custom mode.
+      age.templates."custom.conf" = {
+        content = ''
+          password = "${config.age.placeholder.db-password}"
+        '';
+        path = "/var/lib/agenix-extras-test/custom.conf";
+        mode = "0440";
+      };
+
       # One template that can't be rendered (unknown owner) next to one that
       # can, plus an /etc entry to prove the activation snippets that run
       # after ours still ran.
@@ -60,6 +86,18 @@ pkgs.testers.runNixOSTest {
     perms = machine.succeed("stat -c '%a %U %G' /run/agenix-extras/app.toml").strip()
     assert perms == "400 root root", perms
 
+    # A `file` template, readable by its non-root owner through the 0751
+    # directory, but by nobody else.
+    reader = machine.succeed("runuser -u reader -- cat /run/agenix-extras/reader.conf")
+    assert 'token = "tok-AAA"' in reader, reader
+    machine.fail("runuser -u nobody -- cat /run/agenix-extras/reader.conf")
+
+    # A template at a custom path, with a custom mode.
+    custom = machine.succeed("cat /var/lib/agenix-extras-test/custom.conf")
+    assert 'password = "pw-AAA"' in custom, custom
+    perms = machine.succeed("stat -c '%a %U %G' /var/lib/agenix-extras-test/custom.conf").strip()
+    assert perms == "440 root root", perms
+
     # Like agenix's own secrets, rendered plaintext lives on a ramfs so it is
     # never swapped to disk.
     fstype = machine.succeed("stat -f -c %T /run/agenix-extras").strip()
@@ -99,7 +137,7 @@ pkgs.testers.runNixOSTest {
     status, out = machine.execute(f"{base}/bin/switch-to-configuration test 2>&1")
     assert status == 0, out
     files = machine.succeed("ls -A /run/agenix-extras").split()
-    assert files == ["app.toml"], files
+    assert files == ["app.toml", "reader.conf"], files
 
     # A rendered path may become a directory and vice versa (regression: the
     # stale file blocked `mkdir`, and the stale directory made `mv` move the
