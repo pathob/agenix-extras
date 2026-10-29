@@ -114,9 +114,18 @@ let
         };
 
         mode = lib.mkOption {
-          type = lib.types.str;
+          # Octal (`0440`, also with leading zeros or an operator like `=0440`) or
+          # symbolic (`u=r,g=r`): the forms chmod accepts.
+          type =
+            let
+              clause = "[ugoa]*([-+=]([rwxXst]*|[ugo]))+";
+            in
+            lib.types.strMatching "[-+=]?0*[0-7]{1,4}|${clause}(,${clause})*"
+            // {
+              description = "chmod mode (octal like `0440` or symbolic like `u=r,g=r`)";
+            };
           default = "0400";
-          description = "Permissions of the rendered file (chmod format).";
+          description = "Permissions of the rendered file, in a form chmod accepts (octal or symbolic).";
         };
 
         owner = lib.mkOption {
@@ -184,7 +193,7 @@ let
       replace-secret "$1" "$2" "$tmp"
       shift 2
     done
-    chmod "$mode" "$tmp"
+    chmod -- "$mode" "$tmp"
     chown "$owner:$group" "$tmp"
     # -T: fail if `dest` is a directory instead of moving the file into it.
     mv -fT "$tmp" "$dest"

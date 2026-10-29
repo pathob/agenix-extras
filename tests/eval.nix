@@ -155,6 +155,17 @@ let
   placeholderIsReadOnly =
     !(builtins.tryEval (eval { age.placeholder.token = "x"; }).age.placeholder).success;
 
+  modeOk =
+    mode:
+    (builtins.tryEval
+      (eval {
+        age.templates.t = {
+          content = "x";
+          inherit mode;
+        };
+      }).age.templates.t.mode
+    ).success;
+
   # Option values that should hold, by description.
   values =
     let
@@ -177,6 +188,10 @@ let
       "template group defaults to the owner's primary group" =
         config.age.templates.owned.group == "svcgroup";
       "template group defaults to 0 for the default owner" = config.age.templates.unowned.group == "0";
+      "template mode accepts symbolic modes" = modeOk "u=r,g=r";
+      "template mode accepts leading zeros" = modeOk "000440";
+      "template mode accepts an operator before octal" = modeOk "=0440";
+      "template mode rejects ls-style modes" = !(modeOk "rw-r-----");
     };
 
   # Regression: these used to fail evaluation ("attribute 'agenix' missing").
