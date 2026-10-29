@@ -36,8 +36,11 @@ let
   toStorePath = x: if lib.isPath x then "${x}" else x;
   templateTriggers = tpl: [ (templateSource tpl) ] ++ map secretTrigger (referencedSecrets tpl);
 
-  # Plain text of a template, for placeholder discovery at eval time.
-  templateText = tpl: if tpl.file != null then builtins.readFile tpl.file else tpl.content;
+  # Plain text of a template, for placeholder discovery at eval time. Setting
+  # neither `file` nor `content` fails an assertion, but the assertions
+  # themselves scan the text, so that case reads as empty here.
+  templateText =
+    tpl: if tpl.file != null then builtins.readFile tpl.file else lib.defaultTo "" tpl.content;
 
   # Names of the secrets whose placeholder appears in the template.
   referencedSecrets =
@@ -52,7 +55,9 @@ let
     if tpl.file != null then
       toStorePath tpl.file
     else
-      pkgs.writeText "agenix-template-${lib.strings.sanitizeDerivationName tpl.name}" tpl.content;
+      pkgs.writeText "agenix-template-${lib.strings.sanitizeDerivationName tpl.name}" (
+        lib.defaultTo "" tpl.content
+      );
 
   # Default location for rendered templates. Deliberately outside agenix's
   # generation directories: agenix swaps `/run/agenix` to a fresh, empty
@@ -86,10 +91,11 @@ let
         };
 
         content = lib.mkOption {
-          type = lib.types.lines;
-          default = "";
+          type = lib.types.nullOr lib.types.lines;
+          default = null;
           description = ''
-            Template body. Reference decrypted secrets via
+            Template body. Exactly one of `content` and `file` must be set.
+            Reference decrypted secrets via
             `''${config.age.placeholder.<secret-name>}`; the placeholder is
             substituted with the secret's plaintext at activation time.
           '';
@@ -99,7 +105,7 @@ let
           type = lib.types.nullOr lib.types.path;
           default = null;
           description = ''
-            Path to a file used as the template. When set, `content` is ignored.
+            Path to a file used as the template, as an alternative to `content`.
           '';
         };
 
@@ -317,9 +323,15 @@ in
 
     placeholder = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = { };
-      internal = true;
-      description = "Placeholder strings substituted with secret plaintext.";
+      readOnly = true;
+      description = ''
+        One placeholder string per secret in {option}`age.secrets`, for use in
+        {option}`age.templates.<name>.content` (or a template `file`). Each one is
+        replaced with the secret's decrypted contents when the template is
+        rendered, with leading and trailing newlines stripped. The placeholders
+        themselves contain no secret material, so they are safe in the Nix
+        store.
+      '';
     };
 
     secrets = lib.mkOption {
@@ -349,8 +361,8 @@ in
 
     assertions =
       lib.mapAttrsToList (name: t: {
-        assertion = !(t.file != null && t.content != "");
-        message = "age.templates.${name}: set either `file` or `content`, not both.";
+        assertion = (t.file == null) != (t.content == null);
+        message = "age.templates.${name}: set exactly one of `file` and `content`.";
       }) templates
       # Normalised, because stale files are pruned by comparing against `path`
       # verbatim: `/run/agenix-extras/./x` would be rendered and then deleted.
