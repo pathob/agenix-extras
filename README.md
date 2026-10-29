@@ -77,11 +77,23 @@ A complete working example lives in [`example/`](./example).
 }
 ```
 
-The rendered file ends up at `/run/agenix/rendered/<name>` by default.
+The rendered file ends up at `/run/agenix-extras/<name>` by default.
 Substitution is done with `replace-secret` from nixpkgs: the *template* (with
 opaque `<AGENIX:…:PLACEHOLDER>` markers, no plaintext) goes into the Nix store;
 the plaintext is read from `/run/agenix/<secret-name>` at activation time and
-written only to `/run/agenix/rendered/<name>`.
+written only to `/run/agenix-extras/<name>`.
+
+`/run/agenix-extras` is a ramfs, like agenix's own `/run/agenix.d`, so
+rendered plaintext is never swapped to disk. Each rendered file is replaced
+atomically. If a template fails to render (say its secret didn't decrypt), its
+previous file stays in place, the other templates are still rendered, and the
+activation is reported as failed. Files in `/run/agenix-extras` that no longer
+belong to a template are removed.
+
+> **Changed default.** Earlier versions rendered to `/run/agenix/rendered/`,
+> inside agenix's generation directory. Configs that reference
+> `config.age.templates.<name>.path` pick up the new location automatically;
+> hard-coded paths need updating.
 
 ### Restart/reload on change
 
@@ -111,9 +123,12 @@ Two NixOS VM tests live under [`tests/`](./tests):
 
 - **`templates`** - boots a VM with the example module
   ([`example/module.nix`](./example/module.nix)) and asserts the rendered file
-  at `/run/agenix/rendered/app.toml` contains the substituted secrets with the
-  expected permissions. The same module is what the example flake imports, so
-  the example is the test fixture.
+  at `/run/agenix-extras/app.toml` contains the substituted secrets with the
+  expected permissions. It then switches to a specialisation with a template
+  that fails to render, and checks that activation still completed, the other
+  template rendered, and the failed one kept its previous content. Switching
+  back checks that the orphaned file is removed. The same module is what the
+  example flake imports, so the example is the test fixture.
 - **`restart-on-change`** - boots a VM with a long-running `demo.service` and a
   secret that has `restartUnits = [ "demo.service" ]`. Switches to a
   specialisation whose `.age` file decrypts to different plaintext and asserts
@@ -151,12 +166,13 @@ files. Never reuse them.
   because `users` runs first and needs the file to already exist.
 
 - **`age.templates.<name>.path` must be in a root-only directory.** Rendering
-  uses a sibling `${path}.tmp` to keep the final `mv` atomic on the same
-  filesystem. If the parent directory is writable by another user, that user
-  could race a symlink at the tmp path and trick root into writing the
-  rendered secret elsewhere. The default `/run/agenix/rendered/` is safe; if
-  you point `path` at e.g. `/var/lib/<service>/`, make sure only root can
-  write to that directory.
+  writes a temporary file next to `path` and renames it into place, so the
+  final `mv` is atomic on the same filesystem. If the parent directory is
+  writable by another user, that user could swap the temporary file between
+  steps and trick root into writing the rendered secret elsewhere. The default
+  `/run/agenix-extras/` is safe; if you point `path` at e.g.
+  `/var/lib/<service>/`, make sure only root can write to that directory. Such
+  paths are not on a ramfs and are not cleaned up when the template is removed.
 
 - **`example/` is a demo, not a starting template.** The example imports
   fixture `.age` files under `tests/secrets/` encrypted to the checked-in

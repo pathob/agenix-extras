@@ -40,7 +40,13 @@ let
     else
       pkgs.writeText "agenix-template-${lib.strings.sanitizeDerivationName tpl.name}" tpl.content;
 
-  defaultRenderedDir = "${cfg.secretsDir}/rendered";
+  # Default location for rendered templates. Deliberately outside agenix's
+  # generation directories: agenix swaps `/run/agenix` to a fresh, empty
+  # generation before templates can be rendered, which would leave rendered
+  # files missing for the rest of activation, and for good if rendering
+  # fails. Like agenix's own secrets, this is a ramfs so plaintext is never
+  # swapped to disk.
+  renderedDir = "/run/agenix-extras";
 
   templateType = lib.types.submodule (
     { name, config, ... }:
@@ -54,9 +60,15 @@ let
 
         path = lib.mkOption {
           type = lib.types.str;
-          default = "${defaultRenderedDir}/${config.name}";
-          defaultText = lib.literalExpression ''"''${cfg.secretsDir}/rendered/''${config.name}"'';
-          description = "Path where the rendered file is written.";
+          default = "${renderedDir}/${config.name}";
+          defaultText = lib.literalExpression ''"${renderedDir}/''${config.name}"'';
+          description = ''
+            Path where the rendered file is written. The file is replaced
+            atomically, and kept as-is if rendering fails.
+
+            Files in the default directory that no longer belong to a template
+            are removed on activation. Files at other paths are not.
+          '';
         };
 
         content = lib.mkOption {
@@ -146,7 +158,8 @@ let
     done
     chmod "$mode" "$tmp"
     chown "$owner:$group" "$tmp"
-    mv -f "$tmp" "$dest"
+    # -T: fail if `dest` is a directory instead of moving the file into it.
+    mv -fT "$tmp" "$dest"
     trap - EXIT
   '';
 
@@ -173,13 +186,54 @@ let
       }
     '';
 
+  # Paths in `renderedDir` that belong to a current template. Anything else
+  # in there is left over from a removed or renamed template.
+  renderedManifest = pkgs.writeText "agenix-extras-rendered" (
+    lib.concatLines (
+      lib.filter (lib.hasPrefix "${renderedDir}/") (lib.mapAttrsToList (_: t: t.path) templates)
+    )
+  );
+
   # Render every template, carrying on past failures so one broken template
   # doesn't keep the others from being updated. Exits non-zero if any failed.
   renderAll = pkgs.writeShellScript "agenix-extras-render" ''
-    PATH=${lib.makeBinPath [ pkgs.coreutils ]}
+    PATH=${
+      lib.makeBinPath [
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.gnugrep
+        pkgs.util-linux
+      ]
+    }
     failed=0
-    install -d -m 0751 -o root -g root ${lib.escapeShellArg defaultRenderedDir}
+    dir=${lib.escapeShellArg renderedDir}
+
+    ${lib.optionalString (templates != { }) ''
+      mkdir -p "$dir"
+      if ! mountpoint -q "$dir"; then
+        mount -t ramfs none "$dir" -o nodev,nosuid,mode=0751 || {
+          printf '[agenix-extras] failed to mount ramfs at %s\n' "$dir" >&2
+          exit 1
+        }
+      fi
+      chown root:root "$dir"
+      chmod 0751 "$dir"
+    ''}
+
+    # Prune before rendering, so a stale file or directory can't be in the way
+    # when a template's path turns into a directory or vice versa.
+    if mountpoint -q "$dir"; then
+      while IFS= read -r -d "" f; do
+        if ! grep -Fxq -- "$f" ${renderedManifest}; then
+          printf '[agenix-extras] removing stale %s\n' "$f"
+          rm -f -- "$f"
+        fi
+      done < <(find "$dir" -mindepth 1 ! -type d -print0)
+      find "$dir" -mindepth 1 -depth -type d -empty -delete
+    fi
+
     ${lib.concatMapStringsSep "\n" renderTemplate (lib.attrValues templates)}
+
     exit $failed
   '';
 
@@ -316,9 +370,13 @@ in
         assertion = !(t.file != null && t.content != "");
         message = "age.templates.${name}: set either `file` or `content`, not both.";
       }) templates
+      # Normalised, because stale files are pruned by comparing against `path`
+      # verbatim: `/run/agenix-extras/./x` would be rendered and then deleted.
       ++ lib.mapAttrsToList (name: t: {
-        assertion = lib.hasPrefix "/" t.path;
-        message = "age.templates.${name}.path must be an absolute path; got: ${t.path}";
+        assertion =
+          lib.hasPrefix "/" t.path
+          && builtins.match ".*(//|/\\./|/\\.\\./).*|.*/(\\.|\\.\\.)?" t.path == null;
+        message = "age.templates.${name}.path must be an absolute path without `.`, `..` or empty components; got: ${t.path}";
       }) templates
       ++ [
         {
@@ -333,12 +391,19 @@ in
         }
       ];
 
-    system.activationScripts.agenix-extras = lib.mkIf (templates != { }) {
+    # Runs even without templates so that removing the last one still prunes
+    # its rendered file.
+    system.activationScripts.agenix-extras = {
       # A failure here is recorded by the activation script's ERR trap
       # (marking this snippet and the switch as failed) without stopping the
       # snippets that run after it.
       text = "${renderAll}";
-      deps = [ "agenix" ];
+      # `agenix` (decrypted and chowned) only exists while agenix is enabled.
+      deps = [
+        "users"
+        "groups"
+      ]
+      ++ lib.optional (cfg.enable or true) "agenix";
     };
 
     systemd = lib.mkMerge [
