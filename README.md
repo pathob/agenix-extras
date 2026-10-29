@@ -184,8 +184,9 @@ GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
 evaluates every check, builds the cheap ones, evaluates the
 [`example/`](./example) flake itself, and then runs each VM test as its own
 job on `ubuntu-latest` (which has nested KVM). The list of VM tests
-comes from the flake, so a new test only needs adding to `checks`. A weekly
-workflow opens a PR that updates `flake.lock`.
+comes from the flake, so a new test only needs adding to `checks`. Dependabot
+opens weekly PRs when a flake input has a newer revision (one PR per input)
+and when an action has a new major version.
 
 The fixtures under `tests/keys/` and `tests/secrets/` are **test-only**: the
 private SSH key is checked in so the test can decrypt the pre-encrypted `.age`

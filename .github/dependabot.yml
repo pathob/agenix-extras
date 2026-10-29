@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # One PR per flake input (nixpkgs, agenix, systems) when flake.lock is
+  # behind. Not grouped: grouped Nix updates fail when Dependabot rebases an
+  # open PR (dependabot/dependabot-core#14960).
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+
+  # Workflows reference actions by major version tag; this opens a PR when a
+  # new major version is released (e.g. actions/checkout@v7 -> @v8).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ["*"]

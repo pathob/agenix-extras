@@ -4,8 +4,6 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Lets the flake.lock update workflow start CI on its pull request.
-  workflow_dispatch:
 
 permissions:
   contents: read
