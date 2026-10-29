@@ -21,13 +21,16 @@ jobs:
       - name: nix flake check (eval only)
         run: nix flake check --no-build
 
+      - name: Check formatting
+        run: nix build --print-build-logs .#checks.x86_64-linux.formatting
+
   vm-tests:
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
-        test: [templates, restart-on-change]
+        test: [templates, restart-on-change, sysusers]
 
     steps:
       - uses: actions/checkout@v4

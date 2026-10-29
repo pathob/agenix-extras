@@ -77,11 +77,29 @@ A complete working example lives in [`example/`](./example).
 }
 ```
 
-The rendered file ends up at `/run/agenix/rendered/<name>` by default.
+The rendered file ends up at `/run/agenix-extras/<name>` by default.
 Substitution is done with `replace-secret` from nixpkgs: the *template* (with
 opaque `<AGENIX:…:PLACEHOLDER>` markers, no plaintext) goes into the Nix store;
 the plaintext is read from `/run/agenix/<secret-name>` at activation time and
-written only to `/run/agenix/rendered/<name>`.
+written only to `/run/agenix-extras/<name>`.
+
+`/run/agenix-extras` is a ramfs, like agenix's own `/run/agenix.d`, so
+rendered plaintext is never swapped to disk. Each rendered file is replaced
+atomically. If a template fails to render (say its secret didn't decrypt), its
+previous file stays in place, the other templates are still rendered, and the
+activation is reported as failed. Files in `/run/agenix-extras` that no longer
+belong to a template are removed.
+
+Templates are rendered by an activation script that runs after agenix has
+decrypted and chowned its secrets. With `systemd.sysusers.enable` or
+`services.userborn.enable`, agenix decrypts from systemd units instead, so
+templates are rendered by `agenix-extras.service`, ordered after
+`agenix-chown.service` and re-run whenever agenix re-decrypts.
+
+> **Changed default.** Earlier versions rendered to `/run/agenix/rendered/`,
+> inside agenix's generation directory. Configs that reference
+> `config.age.templates.<name>.path` pick up the new location automatically;
+> hard-coded paths need updating.
 
 ### Restart/reload on change
 
@@ -90,41 +108,59 @@ Both `age.secrets.<name>` and `age.templates.<name>` accept:
 - `restartUnits` - units restarted by `switch-to-configuration`.
 - `reloadUnits`  - units reloaded (or restarted if no reload is defined).
 
-For each listed unit, agenix-extras adds the relevant store paths to the
-unit's `restartTriggers` / `reloadTriggers` at eval time. For a secret that's
-the `.age` file; for a template it's the template source plus every secret's
+For each listed unit, agenix-extras writes the relevant store paths into a
+drop-in, `/etc/systemd/system/<unit>.d/agenix-extras.conf`, as
+`X-Restart-Triggers` / `X-Reload-Triggers`. These are the same keys NixOS's
+own `restartTriggers` / `reloadTriggers` produce. For a secret that's the
+`.age` file; for a template it's the template source plus every secret's
 `.age` the template references. When any of those change between system
 generations, `switch-to-configuration` restarts or reloads the unit as part
 of `nixos-rebuild switch` - the same machinery nixpkgs services use for
 config-file changes. No activation-time state file, no hash bookkeeping.
 
+Because it is a drop-in, it works for any unit: one defined in NixOS, one
+that only comes from a package in `systemd.packages`, or a template instance
+such as `getty@tty1.service` (only that instance is restarted). Units with
+`restartIfChanged = false` are not restarted.
+
 One consequence: rekeying an `.age` file (re-encrypting to a new recipient
 list, plaintext unchanged) is treated as a change because the ciphertext
 hash differs. Affected units will restart on the next switch.
 
-Supported unit kinds: `service`, `socket`, `timer`, `path`, `target`,
-`mount`, `automount`, `slice`. Other suffixes are ignored with a warning.
+Entries must be full unit names with a type suffix (`nginx.service`, not
+`nginx`); anything else fails evaluation.
 
 ## Tests
 
-Two NixOS VM tests live under [`tests/`](./tests):
+Three NixOS VM tests live under [`tests/`](./tests):
 
 - **`templates`** - boots a VM with the example module
   ([`example/module.nix`](./example/module.nix)) and asserts the rendered file
-  at `/run/agenix/rendered/app.toml` contains the substituted secrets with the
-  expected permissions. The same module is what the example flake imports, so
-  the example is the test fixture.
-- **`restart-on-change`** - boots a VM with a long-running `demo.service` and a
-  secret that has `restartUnits = [ "demo.service" ]`. Switches to a
+  at `/run/agenix-extras/app.toml` contains the substituted secrets with the
+  expected permissions. It then switches to a specialisation with a template
+  that fails to render, and checks that activation still completed, the other
+  template rendered, and the failed one kept its previous content. Switching
+  back checks that the orphaned file is removed. The same module is what the
+  example flake imports, so the example is the test fixture.
+- **`restart-on-change`** - boots a VM with a secret whose `restartUnits` lists
+  a NixOS-defined `demo.service`, a `pkgdemo.service` that only comes from
+  `systemd.packages`, and the template instance `inst@a.service`. Switches to a
   specialisation whose `.age` file decrypts to different plaintext and asserts
-  the service got a new PID.
+  all three got a new PID while the unlisted `inst@b.service` did not. Then
+  switches to one without `restartUnits` and checks that everything is still
+  running.
+- **`sysusers`** - same template checks with `services.userborn.enable`, where
+  rendering happens in `agenix-extras.service`. The template is owned by a user
+  that only exists once userborn has run, and switching to a changed secret
+  must re-render it.
 
 Run locally (needs `/dev/kvm`):
 
 ```sh
-nix flake check                                # both tests
+nix flake check                                # all tests
 nix build .#checks.x86_64-linux.templates      # one at a time
 nix build .#checks.x86_64-linux.restart-on-change
+nix build .#checks.x86_64-linux.sysusers
 ```
 
 GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
@@ -145,18 +181,20 @@ files. Never reuse them.
 - **No home-manager module.** Only the NixOS module is provided.
 
 - **Templates cannot supply `hashedPasswordFile`.** Templates render *after*
-  the `users` activation snippet (chain: `agenixInstall → users → agenixChown
-  → agenix-extras`). Setting `owner` to any declared user works fine, but you
-  cannot point `users.users.<n>.hashedPasswordFile` at a rendered template
-  because `users` runs first and needs the file to already exist.
+  users are created (chain: `agenixInstall → users → agenixChown →
+  agenix-extras`, or the equivalent systemd units under sysusers/userborn).
+  Setting `owner` to any declared user works fine, but you cannot point
+  `users.users.<n>.hashedPasswordFile` at a rendered template because users
+  are created first and need the file to already exist.
 
 - **`age.templates.<name>.path` must be in a root-only directory.** Rendering
-  uses a sibling `${path}.tmp` to keep the final `mv` atomic on the same
-  filesystem. If the parent directory is writable by another user, that user
-  could race a symlink at the tmp path and trick root into writing the
-  rendered secret elsewhere. The default `/run/agenix/rendered/` is safe; if
-  you point `path` at e.g. `/var/lib/<service>/`, make sure only root can
-  write to that directory.
+  writes a temporary file next to `path` and renames it into place, so the
+  final `mv` is atomic on the same filesystem. If the parent directory is
+  writable by another user, that user could swap the temporary file between
+  steps and trick root into writing the rendered secret elsewhere. The default
+  `/run/agenix-extras/` is safe; if you point `path` at e.g.
+  `/var/lib/<service>/`, make sure only root can write to that directory. Such
+  paths are not on a ramfs and are not cleaned up when the template is removed.
 
 - **`example/` is a demo, not a starting template.** The example imports
   fixture `.age` files under `tests/secrets/` encrypted to the checked-in
