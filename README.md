@@ -169,11 +169,11 @@ Besides the VM tests, `checks` has three cheap ones: `formatting` (`nixfmt
 ([`tests/eval.nix`](./tests/eval.nix)), which evaluates small configs and
 compares the module's assertion messages.
 
-GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs
-an eval-only `nix flake check --no-build`, builds the cheap checks, and then
-runs each VM test as its own job on `ubuntu-latest` (which has nested KVM).
-The list of VM tests comes from the flake, so a new test only needs adding
-to `checks`. A weekly workflow opens a PR that updates `flake.lock`.
+GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml))
+evaluates every check, builds the cheap ones, and then runs each VM test as
+its own job on `ubuntu-latest` (which has nested KVM). The list of VM tests
+comes from the flake, so a new test only needs adding to `checks`. A weekly
+workflow opens a PR that updates `flake.lock`.
 
 The fixtures under `tests/keys/` and `tests/secrets/` are **test-only**: the
 private SSH key is checked in so the test can decrypt the pre-encrypted `.age`

@@ -22,8 +22,13 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: nix flake check (eval only)
-        run: nix flake check --no-build
+      # Instantiates every check without building it. Not `nix flake check
+      # --no-build`: that evaluates read-only, so files the templates test
+      # writes with builtins.toFile during evaluation can't be read back.
+      - name: Evaluate checks
+        run: |
+          nix eval --json .#checks.x86_64-linux \
+            --apply 'builtins.mapAttrs (_: c: c.drvPath)'
 
       # NixOS VM tests (the checks with a `driver`) run in their own jobs
       # below; everything else is cheap and built here.
