@@ -21,6 +21,13 @@ let
   secrets = cfg.secrets;
   users = config.users.users;
 
+  # Whether agenix defines its activation scripts / units at all. Current
+  # agenix gates them on `age.enable` (which defaults to whether any secret is
+  # enabled); releases up to 0.15.0 lack that option and gate them on
+  # `age.secrets != { }`. Either way, without secrets there is nothing to
+  # wait for.
+  agenixActive = (cfg.enable or true) && secrets != { };
+
   placeholderFor = name: "<AGENIX:${builtins.hashString "sha256" name}:PLACEHOLDER>";
 
   # The store path Nix evaluation should track for `restartTriggers` /
@@ -461,12 +468,12 @@ in
       # (marking this snippet and the switch as failed) without stopping the
       # snippets that run after it.
       text = "${renderAll}";
-      # `agenix` (decrypted and chowned) only exists while agenix is enabled.
+      # `agenix` (decrypted and chowned) only exists while agenix is active.
       deps = [
         "users"
         "groups"
       ]
-      ++ lib.optional (cfg.enable or true) "agenix";
+      ++ lib.optional agenixActive "agenix";
     };
 
     systemd = lib.mkMerge [
@@ -513,7 +520,7 @@ in
         }
         // lib.genAttrs [ "agenix-install-secrets" "agenix-chown" ] (
           _:
-          lib.mkIf (cfg.enable or true) {
+          lib.mkIf agenixActive {
             requiredBy = [ "sysinit-reactivation.target" ];
             before = [ "sysinit-reactivation.target" ];
           }
